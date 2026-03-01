@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>MinimalMusicKeyboard</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -26,15 +26,22 @@
 
   <ItemGroup>
     <!-- WinUI3 / Windows App SDK runtime — 1.6 required by H.NotifyIcon.WinUI 2.2+ -->
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.241114003" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260209005" />
     <!-- MIDI I/O — chosen in architecture Section 2 -->
     <PackageReference Include="NAudio" Version="2.2.1" />
     <!-- SF2 SoundFont synthesis (pure C#) — chosen in architecture Section 2 -->
     <PackageReference Include="MeltySynth" Version="2.4.0" />
     <!-- System tray — chosen in architecture Section 2 -->
-    <PackageReference Include="H.NotifyIcon.WinUI" Version="2.2.0" />
+    <PackageReference Include="H.NotifyIcon.WinUI" Version="2.4.1" />
     <!-- Lightweight DI — registration only, no reflection scanning -->
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- App icon for system tray — must be Content so it is copied to output and indexed in PRI -->
+    <Content Include="Assets\AppIcon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

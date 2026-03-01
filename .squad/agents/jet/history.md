@@ -27,6 +27,27 @@
 
 <!-- append new learnings below -->
 
+### Session: Tray Icon Not Visible — ForceCreate + IconSource Fix (2026-03-01)
+
+**Symptom:** App started but no tray icon appeared — not in taskbar, not in notification area, nowhere.
+
+**Root cause 1 — No IconSource:** `TaskbarIcon` was constructed without an `IconSource`. Windows silently drops tray icons that have no image. The property was left as a comment placeholder in the original scaffold.
+
+**Root cause 2 — No ForceCreate():** H.NotifyIcon.WinUI v2.x requires `ForceCreate(bool)` to be called when the `TaskbarIcon` is created programmatically (i.e. `new TaskbarIcon { ... }` in code, not instantiated from XAML resources). Without it, the icon is never actually registered with the Windows shell. The `bool` parameter controls "Efficiency Mode" — passing `true` hides the app (that's the whole problem), so we pass `false`.
+
+**Root cause 3 — No Assets folder:** The WinUI3 scaffold was created without default template assets. The `Assets\` folder did not exist and had no icon files.
+
+**Fixes applied:**
+1. Created `src\MinimalMusicKeyboard\Assets\AppIcon.png` — minimal 32×32 PNG icon generated via System.Drawing.
+2. Added explicit `<Content Include="Assets\AppIcon.png"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>` to `.csproj` — ensures the file copies to the output directory and is accessible via `ms-appx:///Assets/AppIcon.png`.
+3. `TrayIconService.Initialize()`: set `IconSource = new BitmapImage(new Uri("ms-appx:///Assets/AppIcon.png"))` in the `TaskbarIcon` initializer.
+4. `TrayIconService.Initialize()`: added `_taskbarIcon.ForceCreate(false)` after the icon and menu are fully configured.
+5. Added `using Microsoft.UI.Xaml.Media.Imaging;` for `BitmapImage`.
+
+**API note:** `H.NotifyIcon.TaskbarIcon.IconSource` accepts `ImageSource` (the WinUI3 type). `BitmapImage` is the correct concrete type for URI-based images — not `BitmapIcon` (which is a different control). `BitmapImage` derives from `ImageSource` and takes the URI in its constructor.
+
+**Build result:** MSBuild 0 errors, 0 build errors. NETSDK1057 is informational only (preview SDK).
+
 ### Session: Self-Contained Windows App Runtime (2026-03-01)
 
 **Change:** Added `<WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>` and `<SelfContained>true</SelfContained>` to the main `PropertyGroup` in `MinimalMusicKeyboard.csproj`.

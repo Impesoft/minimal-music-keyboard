@@ -1,6 +1,7 @@
 using H.NotifyIcon;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media.Imaging;
 using System.Diagnostics;
 using System.Windows.Input;
 
@@ -46,11 +47,17 @@ public sealed class TrayIconService : IDisposable
             ContextMenuMode = ContextMenuMode.PopupMenu,
             // H.NotifyIcon.WinUI 2.2+ uses ICommand for tray interactions.
             DoubleClickCommand = new RelayCommand(OnDoubleClick),
-            // IconSource: set to your .ico asset via BitmapIcon.
-            // e.g. IconSource = new BitmapIcon { UriSource = new Uri("ms-appx:///Assets/AppIcon.ico") }
+            // Fix: Windows silently hides tray icons with no image — set icon source.
+            IconSource = new BitmapImage(new Uri("ms-appx:///Assets/AppIcon.png")),
         };
 
         _taskbarIcon.ContextFlyout = BuildContextMenu();
+
+        // Fix: H.NotifyIcon.WinUI v2.x requires ForceCreate() when the icon is created
+        // programmatically (not from XAML). Without this the icon is not registered with
+        // the Windows shell and will not appear in the notification area.
+        // Pass false to disable "Efficiency Mode" (hidden state) — we want the icon visible.
+        _taskbarIcon.ForceCreate(false);
 
         Debug.WriteLine("[TrayIconService] Tray icon initialized.");
     }

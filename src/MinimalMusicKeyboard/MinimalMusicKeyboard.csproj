@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>MinimalMusicKeyboard</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <UseWinUI>true</UseWinUI>
+    <!-- Unpackaged deployment — no MSIX required (see architecture Appendix C Q4) -->
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <Platforms>x64;x86;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-x86;win-arm64</RuntimeIdentifiers>
+    <!-- Tell the WinUI3 XAML tooling not to generate its own Program/Main class
+         since we provide our own in Program.cs for single-instance enforcement. -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WinUI3 / Windows App SDK runtime — 1.6 required by H.NotifyIcon.WinUI 2.2+ -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.241114003" />
+    <!-- MIDI I/O — chosen in architecture Section 2 -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- SF2 SoundFont synthesis (pure C#) — chosen in architecture Section 2 -->
+    <PackageReference Include="MeltySynth" Version="2.4.0" />
+    <!-- System tray — chosen in architecture Section 2 -->
+    <PackageReference Include="H.NotifyIcon.WinUI" Version="2.2.0" />
+    <!-- Lightweight DI — registration only, no reflection scanning -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
+  </ItemGroup>
+
+</Project>

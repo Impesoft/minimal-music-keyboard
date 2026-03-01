@@ -26,3 +26,15 @@
 ## Learnings
 
 <!-- append new learnings below -->
+
+### 2026-03-01 — Architecture v1 Decisions
+- **MIDI I/O:** Chose NAudio.Midi over Windows.Devices.Midi2 (too immature) and RtMidi.NET (native dep complexity). NAudio is battle-tested, pure managed, great Arturia compatibility.
+- **Audio Synthesis:** Chose MeltySynth (pure C# SF2 synthesizer) + NAudio WasapiOut. Zero native dependencies. Avoids FluidSynth P/Invoke complexity. Pending Faye's validation.
+- **System Tray:** H.NotifyIcon.WinUI — only real option for WinUI3 tray apps.
+- **Single Instance:** Named Mutex (`Global\MinimalMusicKeyboard`). Works packaged and unpackaged. Simpler than named pipes since we don't need IPC between instances.
+- **Instrument Switching:** MIDI Program Change messages. Standard MIDI approach, Arturia pads can send PC natively.
+- **Settings Window:** On-demand creation/destruction pattern — never held in memory when closed. Keeps idle footprint under 50MB.
+- **Disposal Order:** Router → MIDI → Audio → Tray → Mutex. MIDI stops before audio to prevent events hitting a disposed engine.
+- **Threading:** Three threads in play — UI (STA), MIDI callback (NAudio), audio render (WASAPI). MeltySynth is thread-safe for note events across MIDI/audio threads.
+- **Memory Budget:** Estimated 29-44MB idle, well within 50MB target.
+- **Open for Gren:** DI container weight, MIDI reconnect strategy, multi-SF2 support, packaged vs unpackaged deployment.

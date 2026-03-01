@@ -1,0 +1,16 @@
+{
+  "assignments": [
+    {
+      "assignment_id": "minimal-music-keyboard-001",
+      "universe": "cowboy_bebop",
+      "created_at": "2026-03-01T17:21:39Z",
+      "agents": [
+        { "name": "Spike", "role": "Lead Architect" },
+        { "name": "Gren",  "role": "Supporting Architect" },
+        { "name": "Jet",   "role": "Windows Dev" },
+        { "name": "Faye",  "role": "Audio Dev" },
+        { "name": "Ed",    "role": "Tester / QA" }
+      ]
+    }
+  ]
+}

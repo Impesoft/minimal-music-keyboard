@@ -1,0 +1,6 @@
+{
+  "version": "1.0",
+  "universe_allowlist": ["cowboy_bebop"],
+  "max_agents": 20,
+  "overflow_strategy": "diegetic_expansion"
+}

@@ -27,6 +27,16 @@
 
 <!-- append new learnings below -->
 
+### Session: Self-Contained Windows App Runtime (2026-03-01)
+
+**Change:** Added `<WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>` and `<SelfContained>true</SelfContained>` to the main `PropertyGroup` in `MinimalMusicKeyboard.csproj`.
+
+**Why:** Ward requested zero external installer requirements. Without these flags, users must have the Windows App Runtime installed separately on their machine. With `WindowsAppSDKSelfContained=true`, the Windows App Runtime DLLs are bundled into the build output directory alongside the app executable. `SelfContained=true` is a prerequisite for `WindowsAppSDKSelfContained`.
+
+**Trade-off:** Publish output size increases (runtime DLLs included), but the NuGet reference to `Microsoft.WindowsAppSDK` remains — this is correct and expected. The NuGet package provides the build-time targets and headers; the DLLs ship with the app.
+
+**Build result:** MSBuild 0 errors, 0 build errors. Output: `bin\x64\Debug\net8.0-windows10.0.22621.0\win-x64\MinimalMusicKeyboard.dll`. NETSDK1057 (preview .NET SDK notice) is informational only, not an error.
+
 ### Session: Initial Scaffold (2026-03-01)
 
 **Files created:**

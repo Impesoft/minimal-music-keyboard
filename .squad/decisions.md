@@ -4,6 +4,65 @@ _Append-only. Managed by Scribe. Agents write to .squad/decisions/inbox/ — Scr
 
 <!-- Entries appended below in reverse-chronological order -->
 
+## Session: 2026-03-01 — Self-Contained Windows App Runtime
+
+### Jet: Self-Contained Windows App Runtime Deployment
+# Decision: Self-Contained Windows App Runtime Deployment
+
+**Author:** Jet (Windows Dev)
+**Date:** 2026-03-01
+**Requested by:** Ward Impe
+**Status:** Merged by Scribe
+
+---
+
+## Decision
+
+Added two properties to `MinimalMusicKeyboard.csproj` `<PropertyGroup>`:
+
+```xml
+<!-- Bundle Windows App Runtime into output — no external installer required -->
+<WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+<SelfContained>true</SelfContained>
+```
+
+---
+
+## Context
+
+Without these flags, the app requires the **Windows App Runtime** to be installed separately on the user's machine (via the bootstrapper or a system-wide MSIX). This is an external dependency Ward explicitly wants eliminated.
+
+---
+
+## Rationale
+
+- `WindowsAppSDKSelfContained=true` — bundles the Windows App Runtime DLLs into the app's output directory. Users run the app directly without any prior installation.
+- `SelfContained=true` — required prerequisite for `WindowsAppSDKSelfContained`. Instructs the .NET SDK to include runtime dependencies in the output.
+- The `Microsoft.WindowsAppSDK` NuGet package reference is **kept** — it provides the build-time MSBuild targets, XAML tooling, and headers. It does not represent an installer dependency; only the presence of Windows App Runtime on the OS does.
+
+---
+
+## Trade-offs
+
+| Aspect | Impact |
+|--------|--------|
+| Publish output size | Larger — Windows App Runtime DLLs bundled (~50–100 MB additional) |
+| User experience | Better — zero prerequisites, xcopy-deployable |
+| NuGet reference | Unchanged — still required for build-time tooling |
+| Memory at runtime | No change — same DLLs loaded, just from app directory instead of system |
+
+---
+
+## Build Verification
+
+Build verified clean after change:
+- Tool: MSBuild from VS 18 Insiders
+- Configuration: Debug, x64
+- Result: **0 errors**, output `MinimalMusicKeyboard.dll` produced successfully
+- NETSDK1057 (preview SDK notice) is informational only
+
+---
+
 ## Session: 2026-03-01 — Architecture & Scaffold
 
 ### Ed: Test Strategy (xUnit pyramid, 37 tests)

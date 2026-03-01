@@ -36,12 +36,4 @@
     <!-- Lightweight DI — registration only, no reflection scanning -->
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
   </ItemGroup>
-
-  <ItemGroup>
-    <!-- App icon for system tray — must be Content so it is copied to output and indexed in PRI -->
-    <Content Include="Assets\AppIcon.png">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
-
 </Project>

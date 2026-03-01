@@ -1,9 +1,8 @@
 using H.NotifyIcon;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media.Imaging;
+using Microsoft.UI.Xaml.Media;
 using System.Diagnostics;
-using System.IO;
 using System.Windows.Input;
 
 namespace MinimalMusicKeyboard.Services;
@@ -48,9 +47,14 @@ public sealed class TrayIconService : IDisposable
             ContextMenuMode = ContextMenuMode.PopupMenu,
             // H.NotifyIcon.WinUI 2.2+ uses ICommand for tray interactions.
             DoubleClickCommand = new RelayCommand(OnDoubleClick),
-            // ms-appx:// requires package identity and doesn't work in unpackaged apps.
-            // Use an absolute file URI resolved from the executable's directory instead.
-            IconSource = new BitmapImage(new Uri(Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.png"))),
+            // GeneratedIconSource renders a Unicode character as the tray icon entirely
+            // in memory — no file loading, works correctly in unpackaged apps.
+            IconSource = new GeneratedIconSource
+            {
+                Text       = "♪",
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+                FontSize   = 24,
+            },
         };
 
         _taskbarIcon.ContextFlyout = BuildContextMenu();

@@ -1,6 +1,7 @@
 using MinimalMusicKeyboard.Helpers;
 using MinimalMusicKeyboard.Interfaces;
 using MinimalMusicKeyboard.Views;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using System.Diagnostics;
 
@@ -86,8 +87,18 @@ public sealed class AppLifecycleManager : IDisposable
         _activeSettingsWindow = new SettingsWindow();
 
         // Release the reference when the window is closed so GC can reclaim it.
-        // WinUI3 windows are COM-backed; nulling the ref is the correct disposal trigger.
         _activeSettingsWindow.Closed += (_, _) => _activeSettingsWindow = null;
+
+        // Center the window on the primary display. AppWindow gives us reliable
+        // positioning in unpackaged apps where Activate() alone may not grant foreground.
+        var appWindow = _activeSettingsWindow.AppWindow;
+        const int W = 640, H = 500;
+        var display = DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Primary);
+        var workArea = display.WorkArea;
+        appWindow.MoveAndResize(new Windows.Graphics.RectInt32(
+            workArea.X + (workArea.Width  - W) / 2,
+            workArea.Y + (workArea.Height - H) / 2,
+            W, H));
 
         _activeSettingsWindow.Activate();
     }

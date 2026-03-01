@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System.Diagnostics;
+using System.IO;
 using System.Windows.Input;
 
 namespace MinimalMusicKeyboard.Services;
@@ -47,8 +48,9 @@ public sealed class TrayIconService : IDisposable
             ContextMenuMode = ContextMenuMode.PopupMenu,
             // H.NotifyIcon.WinUI 2.2+ uses ICommand for tray interactions.
             DoubleClickCommand = new RelayCommand(OnDoubleClick),
-            // Fix: Windows silently hides tray icons with no image — set icon source.
-            IconSource = new BitmapImage(new Uri("ms-appx:///Assets/AppIcon.png")),
+            // ms-appx:// requires package identity and doesn't work in unpackaged apps.
+            // Use an absolute file URI resolved from the executable's directory instead.
+            IconSource = new BitmapImage(new Uri(Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.png"))),
         };
 
         _taskbarIcon.ContextFlyout = BuildContextMenu();

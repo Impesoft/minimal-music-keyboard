@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using MinimalMusicKeyboard.Models;
 
@@ -13,26 +14,46 @@ public sealed class InstrumentCatalog
 {
     private const string PlaceholderSoundFontPath = "[SoundFont Not Configured]";
 
-    private readonly IReadOnlyList<InstrumentDefinition> _instruments;
+    private List<InstrumentDefinition> _instruments;
     private readonly Dictionary<string, InstrumentDefinition> _byId;
     private readonly Dictionary<int, InstrumentDefinition> _byProgramNumber;
 
     public InstrumentCatalog()
     {
-        _instruments = LoadOrCreateDefault();
-        _byId = new Dictionary<string, InstrumentDefinition>(StringComparer.OrdinalIgnoreCase);
+        _instruments     = LoadOrCreateDefault();
+        _byId            = new Dictionary<string, InstrumentDefinition>(StringComparer.OrdinalIgnoreCase);
         _byProgramNumber = new Dictionary<int, InstrumentDefinition>();
 
         foreach (var inst in _instruments)
         {
             _byId[inst.Id] = inst;
-            // Last definition wins if two instruments share a program number
             _byProgramNumber[inst.ProgramNumber] = inst;
         }
     }
 
     /// <summary>Returns the full ordered instrument list (thread-safe; list is immutable after construction).</summary>
     public IReadOnlyList<InstrumentDefinition> GetAll() => _instruments;
+
+    /// <summary>
+    /// Replaces the SoundFont path on every instrument in the catalog with <paramref name="newPath"/>
+    /// and persists the updated catalog to disk. Call from the UI thread after the user picks a new SF2.
+    /// </summary>
+    public void UpdateAllSoundFontPaths(string newPath)
+    {
+        var updated = _instruments.Select(i => i with { SoundFontPath = newPath }).ToList();
+
+        SaveCatalog(GetCatalogPath(), updated);
+
+        _instruments = updated;
+
+        _byId.Clear();
+        _byProgramNumber.Clear();
+        foreach (var inst in updated)
+        {
+            _byId[inst.Id] = inst;
+            _byProgramNumber[inst.ProgramNumber] = inst;
+        }
+    }
 
     /// <summary>Looks up by instrument id (case-insensitive). Returns null if not found.</summary>
     public InstrumentDefinition? GetById(string id)
@@ -48,7 +69,7 @@ public sealed class InstrumentCatalog
         return result;
     }
 
-    private static IReadOnlyList<InstrumentDefinition> LoadOrCreateDefault()
+    private static List<InstrumentDefinition> LoadOrCreateDefault()
     {
         var path = GetCatalogPath();
 
@@ -59,7 +80,7 @@ public sealed class InstrumentCatalog
                 var json = File.ReadAllText(path);
                 var list = JsonSerializer.Deserialize<List<InstrumentDefinition>>(json);
                 if (list is { Count: > 0 })
-                    return list.AsReadOnly();
+                    return list;
             }
             catch
             {
@@ -69,7 +90,7 @@ public sealed class InstrumentCatalog
 
         var defaults = BuildDefaultCatalog();
         SaveCatalog(path, defaults);
-        return defaults.AsReadOnly();
+        return defaults;
     }
 
     private static List<InstrumentDefinition> BuildDefaultCatalog() =>

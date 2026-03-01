@@ -1,5 +1,6 @@
 using MinimalMusicKeyboard.Helpers;
 using MinimalMusicKeyboard.Interfaces;
+using MinimalMusicKeyboard.Models;
 using MinimalMusicKeyboard.Views;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -28,6 +29,7 @@ public sealed class AppLifecycleManager : IDisposable
     private IAudioEngine? _audioEngine;
     private MidiInstrumentSwitcher? _switcher;
     private SettingsWindow? _activeSettingsWindow;
+    private AppSettings _settings = new();
     private bool _disposed;
 
     public AppLifecycleManager()
@@ -50,22 +52,34 @@ public sealed class AppLifecycleManager : IDisposable
     /// </param>
     public void Start(string? preferredMidiDevice = null)
     {
-        // Step 1: MIDI
-        if (preferredMidiDevice is not null)
+        // Step 1: Load persisted settings
+        _settings = AppSettings.Load();
+
+        // Step 2: MIDI — use saved device if no override provided
+        var midiDevice = preferredMidiDevice ?? _settings.MidiDeviceName;
+        if (midiDevice is not null)
         {
-            var opened = _midi.TryOpen(preferredMidiDevice);
+            var opened = _midi.TryOpen(midiDevice);
             Debug.WriteLine(opened
-                ? $"[AppLifecycleManager] MIDI device opened: {preferredMidiDevice}"
-                : $"[AppLifecycleManager] MIDI device not found at startup, will retry: {preferredMidiDevice}");
+                ? $"[AppLifecycleManager] MIDI device opened: {midiDevice}"
+                : $"[AppLifecycleManager] MIDI device not found at startup, will retry: {midiDevice}");
         }
 
-        // Step 2: Audio engine
+        // Step 3: Audio engine
         _audioEngine = new AudioEngine();
 
-        // Step 3: Instrument switcher — wires MIDI PC/CC events → InstrumentCatalog → AudioEngine
+        // Step 4: Load SoundFont if configured
+        if (!string.IsNullOrEmpty(_settings.SoundFontPath) &&
+            System.IO.File.Exists(_settings.SoundFontPath))
+        {
+            _audioEngine.LoadSoundFont(_settings.SoundFontPath);
+            Debug.WriteLine($"[AppLifecycleManager] SoundFont loaded: {_settings.SoundFontPath}");
+        }
+
+        // Step 5: Instrument switcher
         _switcher = new MidiInstrumentSwitcher(_catalog, _audioEngine, _midi);
 
-        // Step 4: Tray icon
+        // Step 6: Tray icon
         _tray.Initialize();
         _tray.SettingsRequested += OnSettingsRequested;
         _tray.ExitRequested += OnExitRequested;
@@ -79,21 +93,16 @@ public sealed class AppLifecycleManager : IDisposable
     {
         if (_activeSettingsWindow is not null)
         {
-            // Window already open — bring to front.
             _activeSettingsWindow.Activate();
             return;
         }
 
-        _activeSettingsWindow = new SettingsWindow();
-
-        // Release the reference when the window is closed so GC can reclaim it.
+        _activeSettingsWindow = new SettingsWindow(_midi, _catalog, _settings, OnSettingsSaved);
         _activeSettingsWindow.Closed += (_, _) => _activeSettingsWindow = null;
 
-        // Center the window on the primary display. AppWindow gives us reliable
-        // positioning in unpackaged apps where Activate() alone may not grant foreground.
         var appWindow = _activeSettingsWindow.AppWindow;
-        const int W = 640, H = 500;
-        var display = DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Primary);
+        const int W = 640, H = 520;
+        var display  = DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Primary);
         var workArea = display.WorkArea;
         appWindow.MoveAndResize(new Windows.Graphics.RectInt32(
             workArea.X + (workArea.Width  - W) / 2,
@@ -101,6 +110,25 @@ public sealed class AppLifecycleManager : IDisposable
             W, H));
 
         _activeSettingsWindow.Activate();
+    }
+
+    private void OnSettingsSaved(AppSettings newSettings)
+    {
+        _settings = newSettings;
+        _settings.Save();
+
+        // Apply MIDI device change
+        if (!string.IsNullOrEmpty(newSettings.MidiDeviceName))
+            _midi.TryOpen(newSettings.MidiDeviceName);
+
+        // Apply SoundFont change
+        if (!string.IsNullOrEmpty(newSettings.SoundFontPath) &&
+            System.IO.File.Exists(newSettings.SoundFontPath))
+        {
+            _catalog.UpdateAllSoundFontPaths(newSettings.SoundFontPath);
+            _audioEngine?.LoadSoundFont(newSettings.SoundFontPath);
+            Debug.WriteLine($"[AppLifecycleManager] SoundFont updated: {newSettings.SoundFontPath}");
+        }
     }
 
     // -------------------------------------------------------------------------

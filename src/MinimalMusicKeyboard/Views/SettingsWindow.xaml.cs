@@ -29,7 +29,7 @@ public sealed partial class SettingsWindow : Window
     private readonly Action<AppSettings>    _onSave;
 
     // Per-row state for the instrument slots
-    private sealed record MappingRowState(int SlotIndex, Border SlotBadge, TextBlock SlotLabel, ComboBox InstrumentCombo, TextBlock Sf2Label, TextBlock TriggerLabel, Button MapButton);
+    private sealed record MappingRowState(int SlotIndex, Button SlotBadge, TextBlock SlotLabel, ComboBox InstrumentCombo, TextBlock Sf2Label, TextBlock TriggerLabel, Button MapButton);
     private readonly List<MappingRowState> _mappingRows = new();
 
     // Listening-mode state (-1 = not listening)
@@ -146,7 +146,7 @@ public sealed partial class SettingsWindow : Window
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(68) });           // Map
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });           // ✕
 
-            // Slot badge
+            // Slot badge — clickable button to select this instrument from the UI
             var slotLabel = new TextBlock
             {
                 Text = $"{i + 1}",
@@ -154,13 +154,20 @@ public sealed partial class SettingsWindow : Window
                 HorizontalAlignment = HorizontalAlignment.Center,
                 FontSize = 12,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                IsHitTestVisible = false,
             };
-            var slotBadge = new Border
+            var slotBadge = new Button
             {
-                Child = slotLabel,
+                Content = slotLabel,
+                Width = 24,
+                Height = 24,
+                Padding = new Thickness(0),
                 CornerRadius = new CornerRadius(4),
-                Padding = new Thickness(3, 1, 3, 1),
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 90, 0, 0)),
+                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
+                BorderThickness = new Thickness(0),
                 VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
             };
 
             // Instrument combo
@@ -169,6 +176,15 @@ public sealed partial class SettingsWindow : Window
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 Margin = new Thickness(4, 0, 4, 0),
                 FontSize = 12,
+            };
+
+            // Wire badge click after combo is declared (closure captures combo)
+            slotBadge.Click += (_, _) =>
+            {
+                var idx = combo.SelectedIndex;
+                if (idx <= 0) return;
+                var inst = _catalog.GetById(catalogItems[idx - 1].Id);
+                if (inst is not null) _switcher.SelectInstrumentFromUi(inst);
             };
             combo.Items.Add("(none)");
             foreach (var inst in catalogItems)
@@ -404,10 +420,8 @@ public sealed partial class SettingsWindow : Window
 
             row.SlotBadge.Background = isActive
                 ? new SolidColorBrush(Microsoft.UI.Colors.Crimson)
-                : null;
-            row.SlotLabel.Foreground = isActive
-                ? new SolidColorBrush(Microsoft.UI.Colors.White)
-                : null;
+                : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 90, 0, 0));
+            row.SlotLabel.Foreground = new SolidColorBrush(Microsoft.UI.Colors.White);
         }
     }
 
@@ -534,17 +548,56 @@ public sealed partial class SettingsWindow : Window
 
     private void OnTestSoundClicked(object sender, RoutedEventArgs e)
     {
-        _audioEngine.NoteOn(0, 60, 80);
+        // Find the first slot that has an instrument with an assigned and existing SF2 file.
+        var catalogItems = _catalog.GetAll();
+        InstrumentDefinition? instToPlay = null;
+        foreach (var row in _mappingRows)
+        {
+            var idx = row.InstrumentCombo.SelectedIndex;
+            if (idx <= 0 || idx - 1 >= catalogItems.Count) continue;
+            var inst = _catalog.GetById(catalogItems[idx - 1].Id);
+            if (inst is not null &&
+                inst.SoundFontPath != "[SoundFont Not Configured]" &&
+                !string.IsNullOrEmpty(inst.SoundFontPath) &&
+                File.Exists(inst.SoundFontPath))
+            {
+                instToPlay = inst;
+                break;
+            }
+        }
+
+        if (instToPlay is null)
+        {
+            TestSoundButton.Content = "⚠ No SF2 configured";
+            var reset = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+            reset.Tick += (_, _) => { TestSoundButton.Content = "▶ Test Sound"; reset.Stop(); };
+            reset.Start();
+            return;
+        }
 
         TestSoundButton.IsEnabled = false;
-        var timer = new Microsoft.UI.Xaml.DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-        timer.Tick += (_, _) =>
+
+        // Select the instrument — this triggers an async SF2 load if not already cached.
+        _switcher.SelectInstrumentFromUi(instToPlay);
+
+        // Give the background SF2 load ~400 ms to complete before firing the note.
+        var loadWait = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        loadWait.Tick += (_, _) =>
         {
-            _audioEngine.NoteOff(0, 60);
-            TestSoundButton.IsEnabled = true;
-            timer.Stop();
+            loadWait.Stop();
+            _audioEngine.NoteOn(0, 60, 80);
+
+            var noteOff = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+            noteOff.Tick += (_, _) =>
+            {
+                _audioEngine.NoteOff(0, 60);
+                TestSoundButton.IsEnabled = true;
+                TestSoundButton.Content = "▶ Test Sound";
+                noteOff.Stop();
+            };
+            noteOff.Start();
         };
-        timer.Start();
+        loadWait.Start();
     }
 }
 

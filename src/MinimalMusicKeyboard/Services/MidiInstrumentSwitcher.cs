@@ -48,6 +48,16 @@ public sealed class MidiInstrumentSwitcher : IDisposable
     }
 
     /// <summary>
+    /// Manually select an instrument from the UI. Thread-safe — callable from any thread.
+    /// Fires <see cref="ActiveInstrumentChanged"/> so the UI highlights update.
+    /// </summary>
+    public void SelectInstrumentFromUi(InstrumentDefinition instrument)
+    {
+        _audioEngine.SelectInstrument(instrument);
+        ActiveInstrumentChanged?.Invoke(this, instrument);
+    }
+
+    /// <summary>
     /// Replaces the active button mappings. Thread-safe — can be called from the UI thread
     /// while MIDI events are arriving on the callback thread.
     /// </summary>

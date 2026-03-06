@@ -36,4 +36,18 @@ public interface IAudioEngine : IDisposable
     /// Send bank + program change to the synthesizer. Routes through the audio command queue.
     /// </summary>
     void SetPreset(int channel, int bank, int preset);
+
+    /// <summary>
+    /// Set master volume (0.0 = silent, 1.0 = full). Thread-safe — callable from any thread.
+    /// </summary>
+    void SetVolume(float volume);
+
+    /// <summary>Returns all active WASAPI render endpoints available on this machine.</summary>
+    IReadOnlyList<AudioDeviceInfo> EnumerateOutputDevices();
+
+    /// <summary>
+    /// Switch to the WASAPI device with the given ID (null = system default).
+    /// The in-flight synthesizer is preserved; only the output endpoint changes.
+    /// </summary>
+    void ChangeOutputDevice(string? deviceId);
 }

@@ -76,14 +76,17 @@ public sealed class TrayIconService : IDisposable
     {
         var menu = new MenuFlyout();
 
+        // IMPORTANT: ContextMenuMode.PopupMenu converts the XAML MenuFlyout into a Win32
+        // popup menu and only invokes the Command property on each item — Click events are
+        // never fired. Use RelayCommand (same pattern as DoubleClickCommand) for both items.
         _settingsItem = new MenuFlyoutItem { Text = "Settings" };
-        _settingsItem.Click += OnSettingsClicked;
+        _settingsItem.Command = new RelayCommand(OnSettingsActivated);
         menu.Items.Add(_settingsItem);
 
         menu.Items.Add(new MenuFlyoutSeparator());
 
         _exitItem = new MenuFlyoutItem { Text = "Exit" };
-        _exitItem.Click += OnExitClicked;
+        _exitItem.Command = new RelayCommand(OnExitActivated);
         menu.Items.Add(_exitItem);
 
         return menu;
@@ -96,10 +99,12 @@ public sealed class TrayIconService : IDisposable
     private void OnDoubleClick()
         => SettingsRequested?.Invoke(this, EventArgs.Empty);
 
-    private void OnSettingsClicked(object sender, RoutedEventArgs e)
+    // H.NotifyIcon dispatches Command.Execute() to the UI thread before invoking —
+    // no manual DispatcherQueue marshalling needed (same as DoubleClickCommand).
+    private void OnSettingsActivated()
         => SettingsRequested?.Invoke(this, EventArgs.Empty);
 
-    private void OnExitClicked(object sender, RoutedEventArgs e)
+    private void OnExitActivated()
         => ExitRequested?.Invoke(this, EventArgs.Empty);
 
     // -------------------------------------------------------------------------
@@ -122,10 +127,9 @@ public sealed class TrayIconService : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        // Unsubscribe all handlers before destroying the icon to prevent
-        // ghost callbacks if disposal races with a tray event.
-        if (_settingsItem is not null) _settingsItem.Click -= OnSettingsClicked;
-        if (_exitItem is not null)     _exitItem.Click    -= OnExitClicked;
+        // Null out commands to release subscriber references.
+        if (_settingsItem is not null) _settingsItem.Command = null;
+        if (_exitItem is not null)     _exitItem.Command    = null;
 
         if (_taskbarIcon is not null)
         {

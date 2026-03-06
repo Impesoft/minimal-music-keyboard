@@ -14,3 +14,11 @@ public sealed class MidiControlEventArgs : EventArgs
     public int ControlNumber { get; init; }
     public int Value { get; init; }
 }
+
+/// <summary>Event args for a MIDI Note On or Note Off message.</summary>
+public sealed class MidiNoteEventArgs : EventArgs
+{
+    public int Channel  { get; init; }
+    public int Note     { get; init; }
+    public int Velocity { get; init; }
+}

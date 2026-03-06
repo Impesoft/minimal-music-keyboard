@@ -28,7 +28,7 @@ public sealed class AppLifecycleManager : IDisposable
     private readonly TrayIconService _tray;
     private IAudioEngine? _audioEngine;
     private MidiInstrumentSwitcher? _switcher;
-    private SettingsWindow? _activeSettingsWindow;
+    private SettingsWindow? _settingsWindow;   // created once, shown/hidden on demand
     private AppSettings _settings = new();
     private bool _disposed;
 
@@ -66,18 +66,14 @@ public sealed class AppLifecycleManager : IDisposable
         }
 
         // Step 3: Audio engine
-        _audioEngine = new AudioEngine();
+        _audioEngine = new AudioEngine(_settings.AudioOutputDeviceId);
 
-        // Step 4: Load SoundFont if configured
-        if (!string.IsNullOrEmpty(_settings.SoundFontPath) &&
-            System.IO.File.Exists(_settings.SoundFontPath))
-        {
-            _audioEngine.LoadSoundFont(_settings.SoundFontPath);
-            Debug.WriteLine($"[AppLifecycleManager] SoundFont loaded: {_settings.SoundFontPath}");
-        }
+        // Apply saved volume
+        _audioEngine.SetVolume(_settings.Volume);
 
         // Step 5: Instrument switcher
         _switcher = new MidiInstrumentSwitcher(_catalog, _audioEngine, _midi);
+        _switcher.UpdateButtonMappings(_settings.ButtonMappings);
 
         // Step 6: Tray icon
         _tray.Initialize();
@@ -91,25 +87,32 @@ public sealed class AppLifecycleManager : IDisposable
 
     private void OnSettingsRequested(object? sender, EventArgs e)
     {
-        if (_activeSettingsWindow is not null)
+        // Create once, reuse forever (show/hide). Recreating on every open would
+        // close the previous window and risk destroying the DispatcherQueue.
+        if (_settingsWindow is null)
         {
-            _activeSettingsWindow.Activate();
-            return;
+            _settingsWindow = new SettingsWindow(_midi, _catalog, _audioEngine!, _switcher!, _settings, OnSettingsSaved);
+
+            // Position on first creation only.
+            try
+            {
+                var appWindow = _settingsWindow.AppWindow;
+                const int W = 640, H = 520;
+                var display  = DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Primary);
+                var workArea = display.WorkArea;
+                appWindow.MoveAndResize(new Windows.Graphics.RectInt32(
+                    workArea.X + (workArea.Width  - W) / 2,
+                    workArea.Y + (workArea.Height - H) / 2,
+                    W, H));
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[AppLifecycleManager] Window positioning failed: {ex.Message}");
+            }
         }
 
-        _activeSettingsWindow = new SettingsWindow(_midi, _catalog, _settings, OnSettingsSaved);
-        _activeSettingsWindow.Closed += (_, _) => _activeSettingsWindow = null;
-
-        var appWindow = _activeSettingsWindow.AppWindow;
-        const int W = 640, H = 520;
-        var display  = DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Primary);
-        var workArea = display.WorkArea;
-        appWindow.MoveAndResize(new Windows.Graphics.RectInt32(
-            workArea.X + (workArea.Width  - W) / 2,
-            workArea.Y + (workArea.Height - H) / 2,
-            W, H));
-
-        _activeSettingsWindow.Activate();
+        _settingsWindow.AppWindow.Show();
+        _settingsWindow.Activate();
     }
 
     private void OnSettingsSaved(AppSettings newSettings)
@@ -121,14 +124,14 @@ public sealed class AppLifecycleManager : IDisposable
         if (!string.IsNullOrEmpty(newSettings.MidiDeviceName))
             _midi.TryOpen(newSettings.MidiDeviceName);
 
-        // Apply SoundFont change
-        if (!string.IsNullOrEmpty(newSettings.SoundFontPath) &&
-            System.IO.File.Exists(newSettings.SoundFontPath))
-        {
-            _catalog.UpdateAllSoundFontPaths(newSettings.SoundFontPath);
-            _audioEngine?.LoadSoundFont(newSettings.SoundFontPath);
-            Debug.WriteLine($"[AppLifecycleManager] SoundFont updated: {newSettings.SoundFontPath}");
-        }
+        // Apply volume change immediately
+        _audioEngine?.SetVolume(newSettings.Volume);
+
+        // Apply audio output device change
+        _audioEngine?.ChangeOutputDevice(newSettings.AudioOutputDeviceId);
+
+        // Apply button mappings immediately
+        _switcher?.UpdateButtonMappings(newSettings.ButtonMappings);
     }
 
     // -------------------------------------------------------------------------
@@ -155,13 +158,12 @@ public sealed class AppLifecycleManager : IDisposable
         _tray.SettingsRequested -= OnSettingsRequested;
         _tray.ExitRequested -= OnExitRequested;
 
-        // Force-close any open settings window before services shut down.
-        // The window's Closed handler nulls _activeSettingsWindow.
-        if (_activeSettingsWindow is not null)
+        // Force-close the settings window (bypasses the hide interceptor).
+        if (_settingsWindow is not null)
         {
-            try { _activeSettingsWindow.Close(); }
+            try { _settingsWindow.ForceClose(); }
             catch (Exception ex) { Debug.WriteLine($"[AppLifecycleManager] Settings window close error: {ex.Message}"); }
-            _activeSettingsWindow = null;
+            _settingsWindow = null;
         }
 
         // Shutdown order per architecture Section 6:

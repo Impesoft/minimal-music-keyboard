@@ -55,6 +55,27 @@ public sealed class InstrumentCatalog
         }
     }
 
+    /// <summary>
+    /// Updates the SoundFont path for a single instrument and persists the catalog.
+    /// </summary>
+    public void UpdateInstrumentSoundFont(string id, string newPath)
+    {
+        var updated = _instruments
+            .Select(i => string.Equals(i.Id, id, StringComparison.OrdinalIgnoreCase) ? i with { SoundFontPath = newPath } : i)
+            .ToList();
+
+        SaveCatalog(GetCatalogPath(), updated);
+
+        _instruments = updated;
+        _byId.Clear();
+        _byProgramNumber.Clear();
+        foreach (var inst in updated)
+        {
+            _byId[inst.Id] = inst;
+            _byProgramNumber[inst.ProgramNumber] = inst;
+        }
+    }
+
     /// <summary>Looks up by instrument id (case-insensitive). Returns null if not found.</summary>
     public InstrumentDefinition? GetById(string id)
     {

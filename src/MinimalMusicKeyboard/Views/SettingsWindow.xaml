@@ -22,6 +22,35 @@
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="24">
 
+                <!-- Active instrument indicator -->
+                <TextBlock x:Name="ActiveInstrumentLabel"
+                           Text="Active instrument: —"
+                           FontSize="12"
+                           Opacity="0.7"
+                           Margin="0,0,0,4"/>
+
+                <!-- Volume -->
+                <StackPanel Spacing="8">
+                    <TextBlock Text="Volume" FontWeight="SemiBold"/>
+                    <Grid ColumnDefinitions="*,Auto">
+                        <Slider x:Name="VolumeSlider"
+                                Grid.Column="0"
+                                Minimum="0"
+                                Maximum="100"
+                                Value="100"
+                                TickFrequency="10"
+                                TickPlacement="None"
+                                ValueChanged="OnVolumeChanged"/>
+                        <TextBlock x:Name="VolumeLabel"
+                                   Grid.Column="1"
+                                   Text="100%"
+                                   Width="44"
+                                   TextAlignment="Right"
+                                   VerticalAlignment="Center"
+                                   Margin="8,0,0,0"/>
+                    </Grid>
+                </StackPanel>
+
                 <!-- MIDI Device -->
                 <StackPanel Spacing="8">
                     <TextBlock Text="MIDI Input Device" FontWeight="SemiBold"/>
@@ -42,69 +71,34 @@
                                Opacity="0.6"/>
                 </StackPanel>
 
-                <!-- SoundFont -->
+                <!-- Audio Output Device -->
                 <StackPanel Spacing="8">
-                    <TextBlock Text="SoundFont File (.sf2)" FontWeight="SemiBold"/>
-                    <TextBlock Text="All instruments below will use this SoundFont."
-                               FontSize="12"
-                               Opacity="0.6"/>
+                    <TextBlock Text="Audio Output Device" FontWeight="SemiBold"/>
                     <Grid ColumnDefinitions="*,Auto">
-                        <TextBox x:Name="SoundFontPathBox"
-                                 Grid.Column="0"
-                                 IsReadOnly="True"
-                                 PlaceholderText="No SoundFont selected — click Browse…"/>
-                        <Button x:Name="BrowseButton"
-                                Grid.Column="1"
-                                Content="Browse…"
+                        <ComboBox x:Name="AudioDeviceCombo"
+                                  Grid.Column="0"
+                                  HorizontalAlignment="Stretch"
+                                  PlaceholderText="System default"/>
+                        <Button Grid.Column="1"
+                                Content="↻"
+                                ToolTipService.ToolTip="Refresh device list"
                                 Margin="8,0,0,0"
-                                Click="OnBrowseClicked"/>
+                                Click="OnRefreshAudioDeviceClicked"/>
                     </Grid>
-                    <TextBlock x:Name="SoundFontStatusText"
+                    <TextBlock x:Name="AudioDeviceStatusText"
                                FontSize="12"
                                Opacity="0.6"/>
                 </StackPanel>
 
-                <!-- Instruments -->
+                <!-- Instrument Slots -->
                 <StackPanel Spacing="8">
-                    <TextBlock Text="Instruments" FontWeight="SemiBold"/>
-                    <TextBlock Text="Switch instruments from your MIDI keyboard using Program Change messages."
-                               FontSize="12"
-                               Opacity="0.6"
-                               TextWrapping="Wrap"/>
+                    <TextBlock Text="Instrument Slots" FontWeight="SemiBold"/>
+                    <TextBlock Text="For each slot: pick an instrument, assign its SoundFont (.sf2), then click Map and press a button on your MIDI device to trigger it."
+                               FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
                     <Border BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                             BorderThickness="1"
                             CornerRadius="4">
-                        <ListView x:Name="InstrumentList"
-                                  SelectionMode="None"
-                                  IsItemClickEnabled="False"
-                                  MaxHeight="200">
-                            <ListView.ItemTemplate>
-                                <DataTemplate>
-                                    <Grid Padding="4,2">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                            <ColumnDefinition Width="60"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0"
-                                                   x:Name="InstrumentName"
-                                                   VerticalAlignment="Center"/>
-                                        <TextBlock Grid.Column="1"
-                                                   x:Name="InstrumentCategory"
-                                                   FontSize="11"
-                                                   Opacity="0.5"
-                                                   VerticalAlignment="Center"
-                                                   Margin="12,0"/>
-                                        <TextBlock Grid.Column="2"
-                                                   x:Name="InstrumentProgram"
-                                                   FontSize="11"
-                                                   Opacity="0.5"
-                                                   VerticalAlignment="Center"
-                                                   HorizontalAlignment="Right"/>
-                                    </Grid>
-                                </DataTemplate>
-                            </ListView.ItemTemplate>
-                        </ListView>
+                        <StackPanel x:Name="ButtonMappingsPanel" Padding="8,4" Spacing="2"/>
                     </Border>
                 </StackPanel>
 
@@ -117,6 +111,10 @@
                     HorizontalAlignment="Right"
                     Spacing="8"
                     Margin="0,20,0,0">
+            <Button x:Name="TestSoundButton"
+                    Content="▶ Test Sound"
+                    ToolTipService.ToolTip="Plays middle C (C4) for 2 seconds to test the selected SoundFont"
+                    Click="OnTestSoundClicked"/>
             <Button x:Name="SaveButton"
                     Content="Save"
                     Style="{StaticResource AccentButtonStyle}"

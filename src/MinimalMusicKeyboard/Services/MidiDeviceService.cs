@@ -36,6 +36,12 @@ public sealed class MidiDeviceService : IMidiDeviceService, IDisposable
     /// <summary>Fired on the NAudio callback thread when a MIDI message arrives.</summary>
     public event EventHandler<MidiInMessageEventArgs>? MidiMessageReceived;
 
+    /// <inheritdoc cref="IMidiDeviceService.NoteOnReceived"/>
+    public event EventHandler<MidiNoteEventArgs>? NoteOnReceived;
+
+    /// <inheritdoc cref="IMidiDeviceService.NoteOffReceived"/>
+    public event EventHandler<MidiNoteEventArgs>? NoteOffReceived;
+
     /// <inheritdoc cref="IMidiDeviceService.ProgramChangeReceived"/>
     public event EventHandler<MidiProgramEventArgs>? ProgramChangeReceived;
 
@@ -146,6 +152,33 @@ public sealed class MidiDeviceService : IMidiDeviceService, IDisposable
 
         switch (e.MidiEvent.CommandCode)
         {
+            case MidiCommandCode.NoteOn when e.MidiEvent is NoteOnEvent noteOn:
+                // NAudio uses NoteOn with velocity=0 to mean NoteOff (MIDI spec allows this).
+                if (noteOn.Velocity > 0)
+                    NoteOnReceived?.Invoke(this, new MidiNoteEventArgs
+                    {
+                        Channel  = noteOn.Channel,
+                        Note     = noteOn.NoteNumber,
+                        Velocity = noteOn.Velocity,
+                    });
+                else
+                    NoteOffReceived?.Invoke(this, new MidiNoteEventArgs
+                    {
+                        Channel  = noteOn.Channel,
+                        Note     = noteOn.NoteNumber,
+                        Velocity = 0,
+                    });
+                break;
+
+            case MidiCommandCode.NoteOff when e.MidiEvent is NoteEvent noteOff:
+                NoteOffReceived?.Invoke(this, new MidiNoteEventArgs
+                {
+                    Channel  = noteOff.Channel,
+                    Note     = noteOff.NoteNumber,
+                    Velocity = 0,
+                });
+                break;
+
             case MidiCommandCode.PatchChange when e.MidiEvent is PatchChangeEvent pc:
                 ProgramChangeReceived?.Invoke(this, new MidiProgramEventArgs
                 {
@@ -289,6 +322,8 @@ public sealed class MidiDeviceService : IMidiDeviceService, IDisposable
 
         // Explicitly null event multicast chains to release subscriber references.
         MidiMessageReceived = null;
+        NoteOnReceived = null;
+        NoteOffReceived = null;
         ProgramChangeReceived = null;
         ControlChangeReceived = null;
         DeviceDisconnected = null;

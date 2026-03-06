@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Linq;
 using MeltySynth;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
@@ -29,19 +30,19 @@ public sealed class AudioEngine : IAudioEngine
     private const int Channels   = 2;     // stereo
 
     // ── Synthesizer (audio thread reads; swap thread writes via Volatile) ──────
-    // Field is read by the audio callback via Volatile.Read; written by background swap via Volatile.Write.
     private Synthesizer? _synthesizer;
 
     // ── Soundfont cache ────────────────────────────────────────────────────────
     private readonly Dictionary<string, SoundFont> _soundFontCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _soundFontCacheLock = new();
-    private string? _currentSoundFontPath;     // volatile read/write; see accesses below
+    private string? _currentSoundFontPath;
 
     // ── MIDI command queue (MIDI thread → audio thread, lock-free) ────────────
     private readonly ConcurrentQueue<MidiCommand> _commandQueue = new();
 
-    // ── WASAPI output ──────────────────────────────────────────────────────────
-    private readonly WasapiOut _wasapiOut;
+    // ── WASAPI output (swappable on device change) ─────────────────────────────
+    private WasapiOut _wasapiOut;
+    private readonly object _wasapiLock = new(); // serialises device swaps
 
     // ── Render scratch buffers (allocated once, reused each callback) ─────────
     private float[] _leftBuffer  = Array.Empty<float>();
@@ -49,11 +50,67 @@ public sealed class AudioEngine : IAudioEngine
 
     private bool _disposed;
 
-    public AudioEngine()
+    public AudioEngine(string? outputDeviceId = null)
     {
-        _wasapiOut = new WasapiOut(AudioClientShareMode.Shared, true, BufferMs);
+        _wasapiOut = CreateWasapiOut(outputDeviceId);
         _wasapiOut.Init(new SynthesizerSampleProvider(this));
         _wasapiOut.Play();
+    }
+
+    // ── Volume ────────────────────────────────────────────────────────────────
+    private float _volume = 1.0f;
+
+    /// <inheritdoc/>
+    public void SetVolume(float volume)
+        => Volatile.Write(ref _volume, Math.Clamp(volume, 0f, 2f));
+
+    // ── Output device ─────────────────────────────────────────────────────────
+
+    /// <inheritdoc/>
+    public IReadOnlyList<AudioDeviceInfo> EnumerateOutputDevices()
+    {
+        using var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+        return enumerator
+            .EnumerateAudioEndPoints(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.DeviceState.Active)
+            .Select(d => new AudioDeviceInfo(d.ID, d.FriendlyName))
+            .ToList();
+    }
+
+    /// <inheritdoc/>
+    public void ChangeOutputDevice(string? deviceId)
+    {
+        lock (_wasapiLock)
+        {
+            if (_disposed) return;
+
+            // Silence and tear down existing output
+            try { _wasapiOut.Stop(); } catch { /* best-effort */ }
+            try { _wasapiOut.Dispose(); } catch { /* best-effort */ }
+
+            // Build and start the new output; synthesizer reference is preserved
+            _wasapiOut = CreateWasapiOut(deviceId);
+            _wasapiOut.Init(new SynthesizerSampleProvider(this));
+            _wasapiOut.Play();
+        }
+    }
+
+    private static WasapiOut CreateWasapiOut(string? deviceId)
+    {
+        if (!string.IsNullOrEmpty(deviceId))
+        {
+            try
+            {
+                using var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+                var device = enumerator.GetDevice(deviceId);
+                if (device is not null)
+                    return new WasapiOut(device, AudioClientShareMode.Shared, true, BufferMs);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[AudioEngine] Could not open device '{deviceId}': {ex.Message} — falling back to default.");
+            }
+        }
+        return new WasapiOut(AudioClientShareMode.Shared, true, BufferMs);
     }
 
     // ── IAudioEngine ───────────────────────────────────────────────────────────
@@ -214,11 +271,12 @@ public sealed class AudioEngine : IAudioEngine
         // Render to separate left/right float arrays
         synth.Render(_leftBuffer.AsSpan(0, frameCount), _rightBuffer.AsSpan(0, frameCount));
 
-        // Interleave into the WASAPI output buffer (L, R, L, R, ...)
+        // Interleave into the WASAPI output buffer (L, R, L, R, ...) and apply volume
+        float vol = Volatile.Read(ref _volume);
         for (int i = 0; i < frameCount; i++)
         {
-            buffer[offset + i * 2]     = _leftBuffer[i];
-            buffer[offset + i * 2 + 1] = _rightBuffer[i];
+            buffer[offset + i * 2]     = _leftBuffer[i]  * vol;
+            buffer[offset + i * 2 + 1] = _rightBuffer[i] * vol;
         }
 
         return count;
@@ -240,20 +298,20 @@ public sealed class AudioEngine : IAudioEngine
         if (_disposed) return;
         _disposed = true;
 
-        // Silence all voices before stopping output
         var synth = Volatile.Read(ref _synthesizer!);
         if (synth is not null)
         {
-            try { synth.NoteOffAll(immediate: true); } catch { /* best-effort */ }
+            try { synth.NoteOffAll(immediate: true); } catch { }
         }
 
-        _wasapiOut.Stop();
-        _wasapiOut.Dispose();
+        lock (_wasapiLock)
+        {
+            _wasapiOut.Stop();
+            _wasapiOut.Dispose();
+        }
 
-        // Null the synthesizer so the render thread outputs silence if called during shutdown
         Volatile.Write(ref _synthesizer!, null!);
 
-        // MeltySynth SoundFont is not IDisposable in 2.4.0; just clear the cache to release refs.
         lock (_soundFontCacheLock)
         {
             _soundFontCache.Clear();

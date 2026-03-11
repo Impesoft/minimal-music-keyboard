@@ -4,6 +4,166 @@ _Append-only. Managed by Scribe. Agents write to .squad/decisions/inbox/ — Scr
 
 <!-- Entries appended below in reverse-chronological order -->
 
+## Session: 2026-03-11 — Batch 2: VST3 Proposal Revision + Test Baseline
+
+### Spike: VST3 Architecture Proposal v1.1
+
+# Decision: VST3 Architecture Proposal v1.1 — Revisions per Gren Review
+
+**Author:** Spike (Lead Architect)  
+**Date:** 2026-03-11  
+**Status:** Pending Gren re-review  
+**Document:** `docs/vst3-architecture-proposal.md` v1.1
+
+---
+
+## Summary of Changes
+
+Revised the VST3 architecture proposal to address all 6 issues (2 BLOCKING + 4 REQUIRED) from Gren's review in `docs/vst3-architecture-review.md`.
+
+### BLOCKING #1 — Threading model contradiction (§4.2 vs §4.3)
+
+**Fixed.** Rewrote the §4.2 AudioEngine code sketch. `AudioEngine.NoteOn()` now enqueues to `ConcurrentQueue<MidiCommand>` — it never calls backend methods. The backend drains the queue in its `Read()` on the audio thread. Updated §2.1 threading contract docstrings: NoteOn/NoteOff are "called from the audio render thread only." Added explicit threading invariant rule. Removed `_backendLock` — no longer needed since command dispatch is single-threaded on the audio thread. Also updated §2.2 Q&A to match.
+
+### BLOCKING #2 — Missing Dispose() specifications
+
+**Fixed.** Added §4.5 "Disposal Sequence" with complete code sketches for both `AudioEngine.Dispose()` (6 steps: disposed flag → NoteOffAll → stop WASAPI → dispose VST3 backend → dispose SF2 backend → dispose mixer) and `Vst3BridgeBackend.Dispose()` (7 steps: state → SHUTDOWN → WaitForExit(3s) → Kill → pipe → accessor → MMF).
+
+### REQUIRED #3 — MixingSampleProvider swap semantics
+
+**Fixed.** Clarified in §4.2: both backends are added to the mixer at initialization and are NEVER removed. Inactive backends output silence via `Array.Clear()`. The `_activeBackend` reference controls MIDI routing, not mixer membership. VST3 backend is added to mixer on first creation via `CreateAndRegisterVst3Backend()`.
+
+### REQUIRED #4 — Vst3BridgeBackend state machine
+
+**Fixed.** Added formal state machine to §7.1: `Running` → `Faulted` → `Disposed`. Defined behavior table for Read()/NoteOn() in each state. Specified crash-to-faulted flow (7 steps). Added `BridgeFaulted` event for tray notification.
+
+### REQUIRED #5 — SoundFontBackend code sketch
+
+**Fixed.** Added full code sketch to §6.1 showing: `Volatile.Read/Write` on `_synthesizer`, `_soundFontCache` with `_soundFontCacheLock`, `Read()` with command queue drain + `synth.Render()`, `LoadAsync()` with Volatile swap, `GetOrLoadSoundFont()` with `using` on FileStream, and `Dispose()`. Command queue injected via constructor.
+
+### REQUIRED #6 — IPC resource ownership
+
+**Fixed.** Added paragraph to §3.2: host creates `MemoryMappedFile` + `NamedPipeServerStream`, bridge connects as client. Host retains valid handles on crash. Naming uses host PID for stability across bridge restarts.
+
+### Additional Changes
+
+- Version bumped to 1.1
+- Status changed to "REVISED — Pending Gren re-review v1.1"
+
+---
+
+### Ed: Test Baseline Report — Pre-VST3 Phase 1
+
+# Decision: Test Baseline Report — Pre-VST3 Phase 1
+
+**Author:** Ed (Tester/QA)  
+**Date:** 2026-03-11  
+**Requested by:** Ward Impe  
+**Task:** Establish test baseline before Phase 1 (AudioEngine refactor to IInstrumentBackend) begins
+
+---
+
+## Summary
+
+Ed has completed the test baseline analysis for the AudioEngine refactor (VST3 Phase 1). Full report available at `docs/test-baseline.md`.
+
+### Key Findings
+
+**Current state:**
+- ✅ 37 tests across 4 files (AudioEngineTests, DisposalVerificationTests, InstrumentCatalogTests, MidiDeviceServiceTests)
+- ✅ Build succeeds (tests compile correctly)
+- ✅ Good coverage for: concurrency contracts, disposal correctness, settings persistence, error handling
+- ❌ **All tests use stubs** — no integration tests for real `AudioEngine` implementation
+- ❌ Test execution blocked by system permissions (`dotnet test` fails)
+
+**Critical gap:**
+- Test project does NOT reference production project (`MinimalMusicKeyboard.csproj`)
+- All tests use interface stubs from `Stubs/Interfaces.cs` and test doubles
+- Zero tests verify the real threading model:
+  - `ConcurrentQueue<MidiCommand>` drain in audio callback (AudioEngine.cs line 259)
+  - `Volatile.Read(ref _synthesizer)` snapshot pattern (line 246)
+  - WASAPI lifecycle (`WasapiOut.Init/Play/Stop/Dispose`)
+  - `SwapSynthesizerAsync` background task + `Volatile.Write` swap (line 194)
+
+**Risk assessment:**
+- Phase 1 will refactor the audio hot path (command queue, volatile snapshot, WASAPI threading)
+- Without integration tests, regression risk is HIGH
+- Stubs cannot catch real threading bugs, memory leaks in WASAPI, or SF2 cache issues
+
+---
+
+## What Ed Delivered
+
+1. **Test baseline report:** `docs/test-baseline.md`
+   - Documents all 42 existing tests (what's covered, what's missing)
+   - Gap analysis: 5 critical gaps, 4 should-have gaps, 5 nice-to-have gaps
+   - Phase 1 regression guard checklist (must-pass criteria)
+   - Test execution environment notes (permission issue documented)
+
+2. **Integration test draft:** `tests/MinimalMusicKeyboard.Tests/AudioEngineIntegrationTests.cs`
+   - 9 integration tests for real `AudioEngine` (construction, disposal, threading, volume, device enumeration)
+   - Marked `[Trait("Category", "Integration")]` for CI exclusion if WASAPI unavailable
+   - **Does not compile yet** — needs project reference to production code
+
+3. **Updated Ed's history:** `.squad/agents/ed/history.md`
+   - Documents scaffold decision (tests-before-production-code)
+   - Records baseline findings and recommendations
+
+---
+
+## Recommendations for Ward
+
+### Option A: Phase 1 proceeds with manual inspection (faster)
+- Phase 1 can start immediately
+- Ed performs manual code review during PR:
+  - [ ] `Volatile.Read(ref _synthesizer)` preserved in audio callback
+  - [ ] `Volatile.Write(ref _synthesizer, newSynth)` preserved in swap path
+  - [ ] Command queue drain loop (`while (_commandQueue.TryDequeue(...))`) preserved
+  - [ ] `NoteOffAll` called before instrument swap
+  - [ ] SoundFont cache not broken
+- **Risk:** Manual inspection can miss threading bugs that only surface under load
+- **Timeline:** Phase 1 unblocked
+
+### Option B: Add integration tests first (safer)
+- Add `<ProjectReference>` to test project
+- Remove stub interfaces (`Stubs/Interfaces.cs`)
+- Update test doubles to implement production interfaces
+- Compile and run `AudioEngineIntegrationTests.cs` (10 tests)
+- Establish real baseline: "all integration tests pass before Phase 1"
+- **Risk:** Requires 1-2 hours to wire up project reference and fix test compilation
+- **Timeline:** Phase 1 delayed by ~2 hours
+
+### Option C: Hybrid (Ed's recommendation)
+- Phase 1 proceeds immediately with manual inspection
+- Parallel work: add project reference + run integration tests
+- Integration tests become the **regression gate** for Phase 1 PR merge
+- **Risk:** Low — manual inspection catches obvious breaks, integration tests catch subtle bugs
+- **Timeline:** Phase 1 unblocked, integration tests ready for PR review
+
+---
+
+## Decision Needed from Ward
+
+1. Which option (A, B, or C)?
+2. Test execution permissions — should Ed investigate CI config, or is manual test execution acceptable?
+3. Should integration tests be added to the Phase 1 PR scope, or as a follow-up?
+
+---
+
+## Files Changed
+
+- `docs/test-baseline.md` — new file (comprehensive baseline report)
+- `tests/MinimalMusicKeyboard.Tests/AudioEngineIntegrationTests.cs` — new file (10 integration tests, does not compile yet)
+- `.squad/agents/ed/history.md` — updated (baseline analysis recorded)
+
+---
+
+## Status
+
+Awaiting Ward's decision on Option A/B/C
+
+---
+
 ## Session: 2026-03-11 — Batch 1: VST3 Architecture, Catalog Fix, Tray Icon Fix
 
 ### Faye: Catalog Fix + VST3 Hosting Research

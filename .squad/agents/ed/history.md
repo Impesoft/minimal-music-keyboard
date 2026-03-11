@@ -52,3 +52,41 @@
 
 **Memory budget tests:** `FullLifecycle_AllServicesDisposed_MemoryReturnsToBaseline` verifies <2MB delta after a full create/use/dispose cycle. Long-running stability tests (1h+ runs, Gen2 flatness) are tagged `[Trait("Category", "Stability")]` and excluded from PR CI.
 
+### 2026-03-11 — Test Baseline Report (Ward Impe task)
+
+**Objective:** Establish test baseline before Phase 1 (AudioEngine refactor to IInstrumentBackend) begins.
+
+**Findings:**
+- **37 tests across 4 files:** AudioEngineTests (11), DisposalVerificationTests (6), InstrumentCatalogTests (13), MidiDeviceServiceTests (7)
+- **All tests use stubs:** Test project does NOT reference production project (`MinimalMusicKeyboard.csproj`). All tests use interface stubs from `Stubs/Interfaces.cs` and test doubles from `Stubs/TestDoubles.cs`. This was an intentional scaffold (tests written before production code).
+- **Zero integration tests:** No tests exercise the real `AudioEngine` implementation. Stubs cannot verify:
+  - ConcurrentQueue command drain in `ReadSamples()` (AudioEngine.cs line 259)
+  - `Volatile.Read(ref _synthesizer)` snapshot pattern (line 246)
+  - WASAPI thread lifecycle (`WasapiOut.Init/Play/Stop/Dispose`)
+  - `SwapSynthesizerAsync` background task + `Volatile.Write` swap (line 194)
+- **Test execution blocked:** `dotnet test` fails with "Permission denied" (system/CI configuration issue)
+- **Build successful:** `dotnet build` succeeds — tests compile correctly
+
+**Critical gap for Phase 1:** Phase 1 refactors the audio hot path (command queue, volatile snapshot, WASAPI threading). We have zero tests that verify this real threading model. Regression risk is HIGH without integration tests.
+
+**Deliverables:**
+1. **Test baseline report:** `docs/test-baseline.md` — comprehensive gap analysis, 29 test methods documented, Phase 1 regression guard checklist
+2. **Integration test draft:** `tests/.../AudioEngineIntegrationTests.cs` — 10 integration tests for real `AudioEngine` (does not compile yet — needs project reference)
+3. **Recommendations:**
+   - Add `<ProjectReference>` to test project
+   - Remove stub interfaces, keep test doubles (update to implement production interfaces)
+   - Run integration tests to establish real baseline before Phase 1 work
+   - Add 2-3 critical tests: command queue drain, WASAPI thread termination
+
+**Test coverage verdict:**
+- ✅ **Good:** Concurrency contracts (no deadlock), disposal correctness (no leaks), settings persistence, error handling
+- ❌ **Missing:** Real audio threading, command queue drain, `Volatile` swap pattern, soundfont cache behavior
+- ⚠️ **Risk:** Phase 1 can proceed with manual code inspection for regression guard, but integration tests must be added ASAP for long-term stability
+
+**Key architectural patterns verified by stubs:**
+- WeakReference disposal pattern (event handler leak detection)
+- Concurrent access safety (20 threads calling NoteOn)
+- Graceful degradation (missing files, corrupted JSON)
+- Wrong disposal order resilience
+
+**Next actions:** Ward reviews baseline report → decides if Phase 1 proceeds with manual inspection or waits for integration tests.

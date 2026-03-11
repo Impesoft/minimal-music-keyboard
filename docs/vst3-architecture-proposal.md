@@ -164,7 +164,7 @@ public interface IInstrumentBackend : IDisposable
 - Means backends are pure audio producers — no platform coupling
 
 **Q: Does the backend handle its own command queuing?**  
-**A: Yes, internally.** The `AudioEngine` still maintains the outer `ConcurrentQueue<MidiCommand>` for thread-safe MIDI→audio handoff. But each backend may have its own internal buffering. For VST3 out-of-process, commands are batched and sent over the IPC pipe per audio block.
+**A: No.** The `AudioEngine` owns the single `ConcurrentQueue<MidiCommand>`. The audio thread drains the queue in `ReadSamples()` and dispatches `NoteOn`/`NoteOff`/`SetProgram` to the active backend. **The MIDI callback thread never calls backend methods directly. All backend method calls happen on the audio thread via the command queue drain in `ReadSamples()`.** For the Vst3BridgeBackend, IPC commands are batched and sent over the named pipe during the backend's `Read()` call — still on the audio thread.
 
 ---
 
@@ -246,6 +246,8 @@ Offset 0x0008: float[blockSize * 2] audioBuffer  (interleaved stereo)
 
 Double-buffered: bridge writes block N+1 while host reads block N.
 
+**IPC resource ownership:** The host (`Vst3BridgeBackend`) creates both the `MemoryMappedFile` and the `NamedPipeServerStream`. The bridge process connects to both as a client (`NamedPipeClientStream` + `MemoryMappedFile.OpenExisting`). This ensures the host retains valid handles on bridge crash. A crashed bridge does not orphan IPC resources. On restart, the new bridge process connects to the existing host-owned resources — no re-creation needed. The naming scheme `mmk-vst3-audio-{hostPid}` uses the **host's** PID (not the bridge's), so the name is stable across bridge restarts.
+
 ### 3.3 Why Not In-Process (Option A)?
 
 While in-process COM interop would eliminate the bridge process, it violates core project constraints:
@@ -295,10 +297,15 @@ Backends are pure `ISampleProvider` audio sources. The engine routes MIDI comman
 public sealed class AudioEngine : IAudioEngine
 {
     private readonly MixingSampleProvider _mixer;
+    private readonly ConcurrentQueue<MidiCommand> _commandQueue = new();
     private IInstrumentBackend? _activeBackend;
-    private readonly object _backendLock = new();
+    private volatile bool _disposed;
 
-    // Backend registry — created once, reused across instrument switches
+    // Backend registry — created once, reused across instrument switches.
+    // Both backends are added to the mixer at initialization (or on first creation).
+    // They are NEVER removed. An inactive backend's Read() simply calls Array.Clear()
+    // and returns silence. The _activeBackend reference determines which backend receives
+    // MIDI commands — it is NOT the mixer input list.
     private readonly SoundFontBackend _sfBackend;
     private Vst3BridgeBackend? _vst3Backend; // lazy — only created when first VST3 instrument selected
 
@@ -310,7 +317,7 @@ public sealed class AudioEngine : IAudioEngine
             ReadFully = true  // output silence when no inputs
         };
 
-        _sfBackend = new SoundFontBackend();
+        _sfBackend = new SoundFontBackend(_commandQueue);
         _mixer.AddMixerInput(_sfBackend.GetSampleProvider());
 
         _wasapiOut = CreateWasapiOut(outputDeviceId);
@@ -318,33 +325,50 @@ public sealed class AudioEngine : IAudioEngine
         _wasapiOut.Play();
     }
 
+    // ── Public MIDI API (called from MIDI callback thread) ────────────
+    // Enqueues to ConcurrentQueue only. Never calls backend methods directly.
+    public void NoteOn(int channel, int note, int velocity)
+    {
+        _commandQueue.Enqueue(new MidiCommand(MidiCommandType.NoteOn, channel, note, velocity));
+    }
+
+    public void NoteOff(int channel, int note)
+    {
+        _commandQueue.Enqueue(new MidiCommand(MidiCommandType.NoteOff, channel, note, 0));
+    }
+
+    // ── Audio thread (called from MixingSampleProvider.Read()) ────────
+    // The audio thread drains the command queue and dispatches to the active backend.
+    // This happens inside each backend's Read() via the shared command queue reference.
+    // SoundFontBackend drains the queue in its Read() and calls synth.NoteOn/Off/Render.
+    // Vst3BridgeBackend drains pending MIDI commands and sends them over the IPC pipe.
+
     public void SelectInstrument(InstrumentDefinition instrument)
     {
         var backend = ResolveBackend(instrument.Type);
-        lock (_backendLock)
-        {
-            _activeBackend?.NoteOffAll();
-            _activeBackend = backend;
-        }
+        Volatile.Read(ref _activeBackend)?.NoteOffAll();
+        Volatile.Write(ref _activeBackend, backend);
         _ = Task.Run(() => backend.LoadAsync(instrument));
     }
 
     private IInstrumentBackend ResolveBackend(InstrumentType type) => type switch
     {
         InstrumentType.SoundFont => _sfBackend,
-        InstrumentType.Vst3 => _vst3Backend ??= CreateVst3Backend(),
+        InstrumentType.Vst3 => _vst3Backend ??= CreateAndRegisterVst3Backend(),
         _ => throw new ArgumentOutOfRangeException(nameof(type)),
     };
 
-    // MIDI commands route to active backend only
-    public void NoteOn(int channel, int note, int velocity)
+    private Vst3BridgeBackend CreateAndRegisterVst3Backend()
     {
-        var backend = Volatile.Read(ref _activeBackend);
-        backend?.NoteOn(channel, note, velocity);
+        var backend = new Vst3BridgeBackend(_commandQueue);
+        _mixer.AddMixerInput(backend.GetSampleProvider());
+        return backend;
     }
-    // ... NoteOff, SetPreset similar
+    // ... SetPreset, Volume, device enumeration similar
 }
 ```
+
+> **Threading invariant:** The MIDI callback thread never calls backend methods directly. All backend method calls happen on the audio thread via the command queue drain in `ReadSamples()`. The `_activeBackend` reference determines which backend drains the shared `ConcurrentQueue<MidiCommand>` — inactive backends skip the drain and output silence.
 
 ### 4.3 Threading Model Changes
 
@@ -393,6 +417,74 @@ public interface IAudioEngine : IDisposable
 ```
 
 **Breaking change:** `LoadSoundFont(string path)` is removed from `IAudioEngine`. It was an SF2-specific leak in the abstraction. Any call sites should migrate to `SelectInstrument(InstrumentDefinition)` with a constructed SF2 definition. Check `MidiInstrumentSwitcher` and any UI code for call sites.
+
+### 4.5 Disposal Sequence
+
+For a tray-resident app that runs for hours/days, correct disposal ordering is critical. Disposing in the wrong order causes use-after-dispose bugs on the audio thread.
+
+#### AudioEngine.Dispose()
+
+```csharp
+public void Dispose()
+{
+    if (_disposed) return;
+    _disposed = true;
+
+    // 1. Silence active voices
+    _activeBackend?.NoteOffAll();
+
+    // 2. Stop + dispose WASAPI output — terminates the audio thread.
+    //    MUST happen before disposing backends. MixingSampleProvider.Read() calls
+    //    backend.GetSampleProvider().Read() on the audio thread. Disposing a backend
+    //    while the audio thread is reading from it is a use-after-dispose bug.
+    _wasapiOut?.Stop();
+    _wasapiOut?.Dispose();
+
+    // 3. Dispose VST3 backend (if created) — sends SHUTDOWN, waits, force-kills bridge
+    _vst3Backend?.Dispose();
+
+    // 4. Dispose SF2 backend — clears SoundFont cache, nulls synthesizer
+    _sfBackend?.Dispose();
+
+    // 5. Dispose mixer if it implements IDisposable
+    (_mixer as IDisposable)?.Dispose();
+}
+```
+
+#### Vst3BridgeBackend.Dispose()
+
+```csharp
+public void Dispose()
+{
+    if (_state == BridgeState.Disposed) return;
+
+    // 1. Mark as disposed — all subsequent Read()/NoteOn() calls become no-ops
+    _state = BridgeState.Disposed;
+
+    // 2. Send SHUTDOWN over named pipe (best-effort, ignore if pipe already broken)
+    try { SendCommand(BridgeCommand.Shutdown); }
+    catch (IOException) { /* pipe broken — bridge already dead */ }
+
+    // 3. Wait for bridge process to exit gracefully (3s timeout)
+    if (_bridgeProcess is { HasExited: false })
+    {
+        if (!_bridgeProcess.WaitForExit(3000))
+        {
+            // 4. Force-kill if still running
+            _bridgeProcess.Kill();
+        }
+    }
+
+    // 5. Close named pipe handle
+    _pipeStream?.Dispose();
+
+    // 6. Release shared memory view accessor
+    _sharedMemoryAccessor?.Dispose();
+
+    // 7. Release memory-mapped file handle
+    _sharedMemoryFile?.Dispose();
+}
+```
 
 ---
 
@@ -484,6 +576,122 @@ The biggest Phase 1 refactoring: extract the MeltySynth synthesis logic from `Au
 - `IAudioEngine` method implementations (delegating to active backend)
 - Device enumeration
 
+#### SoundFontBackend Code Sketch
+
+The shared `ConcurrentQueue<MidiCommand>` is injected via the constructor. The backend drains the queue during `Read()` on the audio thread and calls synth methods directly — no cross-thread calls.
+
+```csharp
+public sealed class SoundFontBackend : IInstrumentBackend
+{
+    private readonly ConcurrentQueue<MidiCommand> _commandQueue;
+    private Synthesizer? _synthesizer;
+    private readonly Dictionary<string, SoundFont> _soundFontCache = new();
+    private readonly object _soundFontCacheLock = new();
+    private readonly float[] _renderBuffer = new float[BlockSize * 2];
+
+    public string DisplayName => "MeltySynth SF2";
+    public InstrumentType BackendType => InstrumentType.SoundFont;
+    public bool IsReady => Volatile.Read(ref _synthesizer) is not null;
+
+    public SoundFontBackend(ConcurrentQueue<MidiCommand> commandQueue)
+    {
+        _commandQueue = commandQueue;
+    }
+
+    // ── ISampleProvider.Read() — called on the WASAPI audio thread ───
+    public int Read(float[] buffer, int offset, int count)
+    {
+        var synth = Volatile.Read(ref _synthesizer);
+        if (synth is null)
+        {
+            Array.Clear(buffer, offset, count);
+            return count;
+        }
+
+        // Drain command queue — only the active backend does this
+        while (_commandQueue.TryDequeue(out var cmd))
+        {
+            switch (cmd.Type)
+            {
+                case MidiCommandType.NoteOn:
+                    synth.NoteOn(cmd.Channel, cmd.Note, cmd.Velocity);
+                    break;
+                case MidiCommandType.NoteOff:
+                    synth.NoteOff(cmd.Channel, cmd.Note);
+                    break;
+                case MidiCommandType.ProgramChange:
+                    synth.ProcessMidiMessage(cmd.Channel, 0xC0, cmd.Note, 0);
+                    break;
+            }
+        }
+
+        synth.RenderInterleaved(buffer.AsSpan(offset, count));
+        return count;
+    }
+
+    // ── LoadAsync — called from a background Task ────────────────────
+    public async Task LoadAsync(InstrumentDefinition instrument, CancellationToken cancellation = default)
+    {
+        var sf = await Task.Run(() => GetOrLoadSoundFont(instrument.SoundFontPath), cancellation);
+        var settings = new SynthesizerSettings(SampleRate);
+        var newSynth = new Synthesizer(sf, settings);
+        newSynth.ProcessMidiMessage(0, 0xC0, instrument.ProgramNumber, 0);
+
+        // Volatile swap: silence old synth, install new one
+        var oldSynth = Volatile.Read(ref _synthesizer);
+        oldSynth?.NoteOffAll();
+        Volatile.Write(ref _synthesizer, newSynth);
+    }
+
+    private SoundFont GetOrLoadSoundFont(string path)
+    {
+        lock (_soundFontCacheLock)
+        {
+            if (_soundFontCache.TryGetValue(path, out var cached))
+                return cached;
+        }
+
+        SoundFont sf;
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            sf = new SoundFont(stream);
+        }
+
+        lock (_soundFontCacheLock)
+        {
+            _soundFontCache[path] = sf;
+        }
+        return sf;
+    }
+
+    // ── IInstrumentBackend (audio-thread-only methods) ───────────────
+    public void NoteOn(int channel, int note, int velocity)
+        => Volatile.Read(ref _synthesizer)?.NoteOn(channel, note, velocity);
+
+    public void NoteOff(int channel, int note)
+        => Volatile.Read(ref _synthesizer)?.NoteOff(channel, note);
+
+    public void NoteOffAll()
+        => Volatile.Read(ref _synthesizer)?.NoteOffAll();
+
+    public void SetProgram(int channel, int bank, int program)
+        => Volatile.Read(ref _synthesizer)?.ProcessMidiMessage(channel, 0xC0, program, 0);
+
+    public ISampleProvider GetSampleProvider() => this; // SoundFontBackend is its own ISampleProvider
+
+    // ── Dispose ──────────────────────────────────────────────────────
+    public void Dispose()
+    {
+        Volatile.Read(ref _synthesizer)?.NoteOffAll();
+        Volatile.Write(ref _synthesizer, null);
+        lock (_soundFontCacheLock)
+        {
+            _soundFontCache.Clear();
+        }
+    }
+}
+```
+
 ---
 
 ## 7. Risk Areas for Gren's Review
@@ -496,6 +704,33 @@ The bridge process (`mmk-vst3-bridge.exe`) must be reliably spawned and monitore
 - **Restart policy:** Auto-restart on crash? How many times? With backoff?
 - **Shutdown ordering:** Bridge must exit before `AudioEngine.Dispose()` completes. Timeout + `Process.Kill()` as fallback.
 - **Multiple instances:** If user has 2 VST3 instruments configured, do we spawn 2 bridges or multiplex?
+
+#### Vst3BridgeBackend State Machine
+
+```csharp
+private enum BridgeState { Running, Faulted, Disposed }
+private volatile BridgeState _state = BridgeState.Running;
+
+/// <summary>Raised when the bridge process crashes. Message contains the reason.</summary>
+public event EventHandler<string>? BridgeFaulted;
+```
+
+**State behaviors:**
+
+| State | `Read()` | `NoteOn()`/`NoteOff()` | IPC | Transition |
+|-------|----------|------------------------|-----|------------|
+| **Running** | Normal IPC: send `RENDER`, spin-wait on shared memory, return audio block | Send `MIDI` command over named pipe | Active | → `Faulted` on `IOException`/`BrokenPipeException` in `Read()` or pipe write |
+| **Faulted** | Immediately calls `Array.Clear()` and returns silence (zero-cost, no IPC) | No-ops (commands are silently dropped) | Dead | → `Running` after `BridgeProcessManager` detects crash via process exit event, successfully restarts bridge, and re-sends `INIT` |
+| **Disposed** | No-ops, returns silence | No-ops | N/A | Terminal state — no transitions out |
+
+**Crash → Faulted flow:**
+1. Bridge process crashes (access violation, heap corruption, etc.)
+2. `Vst3BridgeBackend.Read()` catches `IOException`/`BrokenPipeException` on next pipe write
+3. Set `_state = BridgeState.Faulted`
+4. Raise `BridgeFaulted` event with reason string (e.g., "VST3 bridge process exited unexpectedly")
+5. Tray icon shows tooltip: "Plugin crashed — click to retry"
+6. `BridgeProcessManager` independently detects crash via `Process.Exited` event
+7. On user retry (or auto-restart if policy allows): spawn new bridge, connect to existing host-owned IPC resources, send `INIT`, transition `_state = BridgeState.Running`
 
 **Spike's recommendation:** One bridge process per VST3 plugin instance. Simpler isolation. A single bridge hosting multiple plugins would mean one crash kills all plugins.
 

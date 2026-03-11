@@ -27,6 +27,20 @@
 
 <!-- append new learnings below -->
 
+### Phase 3b — VST3 SDK Integration (2026-03-12)
+
+**Files updated:**
+- `src/mmk-vst3-bridge/src/audio_renderer.*` — real VST3 hosting (Module load, IComponent/IAudioProcessor setup, event list, render)
+- `src/mmk-vst3-bridge/src/bridge.cpp` — load command now initializes plugin + sends load_ack
+- `src/mmk-vst3-bridge/CMakeLists.txt` — wires Steinberg VST3 SDK targets
+- `src/mmk-vst3-bridge/README.md` — VST3 SDK clone/build notes
+
+**Key changes:**
+- Load path uses `VST3::Hosting::Module::create` + first `kVstAudioEffectClass` component
+- Render thread feeds `Vst::EventList` with note-on/off events and writes interleaved float32 stereo to MMF
+- Optional `.vstpreset` load via `Vst::PresetFile` (non-fatal on failure)
+- Uses `Steinberg::IPtr` for COM lifetime and outputs silence when no plugin is loaded
+
 ### Phase 3 — Native VST3 Bridge Project (2026-03-11)
 
 **Files created:**
@@ -48,6 +62,8 @@
 - JSON command protocol for load/noteOn/noteOff/setProgram/shutdown
 
 **Status:** Scaffolding complete. Phase 3b (VST3 SDK integration) ready to begin. No C++ build attempted.
+
+**Code review (Phase 3b) verdict (2026-03-12):** ✅ APPROVED by Gren (agent-26) — 0 blocking, 0 required, 4 non-blocking notes. Full review: `docs/phase3b-code-review.md`.
 
 ### Phase 2 — Vst3BridgeBackend (2026-07-18)
 

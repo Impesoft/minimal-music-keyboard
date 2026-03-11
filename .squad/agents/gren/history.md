@@ -216,3 +216,20 @@
 **Issue 2 (program number collision):** Resolved. All four `_byProgramNumber` rebuild loops guard with `inst.Type == InstrumentType.SoundFont`. VST3 instruments excluded from program-number index. Ed chose option (b) — type-filtered insert — which is the architecturally cleaner approach.
 
 **Full conformance check passed:** No additional blocking or required issues. AudioEngine threading discipline (Volatile.Read/Write), disposal chain, both-backends-in-mixer pattern, and UI elements (type toggle, file pickers, panel switching) all correct.
+
+### 2026-03-12 — Phase 3b Code Review (APPROVED)
+
+**Reviewed:** Phase 3b implementation (Faye) — VST3 SDK integration in mmk-vst3-bridge
+**Verdict:** APPROVED — 0 blocking, 0 required, 4 non-blocking notes
+**Full review:** `docs/phase3b-code-review.md`
+
+**Key findings:**
+1. **VST3 lifecycle correct** — Module::create, factory scan for kVstAudioEffectClass, IComponent::initialize, setupProcessing, setActive, setProcessing — all in correct order with matching reverse teardown in ResetPluginState.
+2. **Resource management leak-free** — IPtr<T> for component/processor, Module::Ptr for module, Steinberg::owned() for QI result. Module held alive while plugin is in use.
+3. **Thread safety adequate** — eventsMutex_ protects pending events, pluginMutex_ protects plugin state. Consistent lock order (pluginMutex_ → eventsMutex_) prevents deadlock.
+4. **Wire protocol compatible** — `"ack":"load_ack"` accepted by managed-side ParseLoadAck (line 501 accepts both "load" and "load_ack").
+5. **Graceful degradation verified** — FillBuffer fills silence first, returns early if no processor. Load failures return error via IPC ack without crashing.
+
+**Non-blocking notes (4):** Null host context in initialize(), std::mutex on render thread (acceptable for current workload), frameSize/kMaxBlockSize alignment assumption, silent preset failure on stderr only.
+
+**Lesson learned:** When reviewing VST3 hosting code, the three most critical checks are: (a) the initialization sequence matches the SDK's required lifecycle (initialize → setupProcessing → setActive → setProcessing, with exact reverse on teardown), (b) COM references are managed via smart pointers (IPtr/owned) not raw release() calls — a single missed release() is an invisible leak, and (c) the process() call receives properly structured ProcessData with pre-allocated buffers on the render thread to avoid heap allocation in the audio path. This implementation passes all three.

@@ -27,6 +27,28 @@
 
 <!-- append new learnings below -->
 
+### Phase 3 — Native VST3 Bridge Project (2026-03-11)
+
+**Files created:**
+- `src/mmk-vst3-bridge/` — C++ bridge project with CMake + vcpkg setup
+- `src/mmk-vst3-bridge/src/` — IPC client, shared memory writer, audio render thread, and bridge loop
+- `src/mmk-vst3-bridge/README.md` — build notes + VST3 SDK setup
+
+**Deliverables:**
+- CMake + vcpkg setup (`CMakeLists.txt`, `vcpkg.json`)
+- Bridge entry point and IPC client (named pipe client, JSON line protocol)
+- Shared memory writer with MMF header validation and atomic write position updates
+- Audio render thread with a lock-free MIDI event queue (stubbed render)
+
+**Key design decisions:**
+- Host creates IPC resources (pipe server + MMF) per Gren's Phase 2 re-review approval
+- Bridge connects as named pipe client to `\\.\pipe\mmk-vst3-{hostPid}` and opens host-owned MMF
+- Shared-memory writer validates magic/version/frameSize header and updates `writePos` via atomic operations
+- Audio thread runs a lock-free SPSC MIDI queue and renders silence (TODO for VST3 SDK integration)
+- JSON command protocol for load/noteOn/noteOff/setProgram/shutdown
+
+**Status:** Scaffolding complete. Phase 3b (VST3 SDK integration) ready to begin. No C++ build attempted.
+
 ### Phase 2 — Vst3BridgeBackend (2026-07-18)
 
 **Files created:**

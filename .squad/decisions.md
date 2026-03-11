@@ -6,6 +6,46 @@ _Append-only. Managed by Scribe. Agents write to .squad/decisions/inbox/ — Scr
 
 ## Session: 2026-03-11 — Batch 2: VST3 Proposal Revision + Test Baseline
 
+### Gren: VST3 Architecture Proposal v1.1 Review
+
+# Decision: VST3 Architecture Proposal v1.1 — APPROVED
+
+**Author:** Gren (Supporting Architect)  
+**Date:** 2026-03-11  
+**Requested by:** Ward Impe  
+**Status:** Approved — Phase 1 implementation may begin
+
+---
+
+## Decision: APPROVED
+
+All six issues from v1.0 review are resolved:
+
+1. **BLOCKING: Threading model** — ✅ Contradiction eliminated. Interface docstring, code sketch, and threading diagram all agree: MIDI thread enqueues only, audio thread drains and dispatches. Rule explicitly stated.
+2. **BLOCKING: Dispose() specs** — ✅ Full ordered sequences for both AudioEngine and Vst3BridgeBackend. WASAPI stopped before backends disposed. Bridge killed after timeout.
+3. **REQUIRED: Mixer swap semantics** — ✅ Both backends permanently registered. Never removed. Inactive backends output silence. No dynamic add/remove.
+4. **REQUIRED: Bridge crash state machine** — ✅ Three states (Running/Faulted/Disposed), behavior table, BridgeFaulted event, 7-step crash recovery flow.
+5. **REQUIRED: SoundFontBackend sketch** — ✅ 110-line sketch verified against live AudioEngine.cs. All Volatile, cache, drain, and FileStream patterns preserved.
+6. **REQUIRED: IPC resource ownership** — ✅ Host creates MMF + pipe server. Bridge connects as client. Host PID in naming scheme for stability across restarts.
+
+---
+
+## Impact
+
+- Faye is cleared to begin Phase 1: `IInstrumentBackend` interface + `SoundFontBackend` extraction + `AudioEngine` refactor
+- Phase 1 must pass all existing tests with zero test code changes
+- Ed must review Phase 1 PR for pattern preservation before merge
+- Phase 2 (Vst3BridgeBackend) blocked until Phase 1 is merged and verified
+
+---
+
+## Files
+
+- `docs/vst3-architecture-proposal.md` — v1.1 (approved artifact)
+- `docs/vst3-architecture-review-v1.1.md` — full re-review with resolution check
+
+---
+
 ### Spike: VST3 Architecture Proposal v1.1
 
 # Decision: VST3 Architecture Proposal v1.1 — Revisions per Gren Review

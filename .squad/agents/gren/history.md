@@ -41,3 +41,19 @@
 5. **MIDI device disconnect is a first-class concern for always-on apps** — USB devices WILL be disconnected during normal use. The architecture must handle this gracefully from day one, not as an afterthought. Designed a Disconnected state machine pattern.
 
 6. **Bank Select accumulation is standard MIDI** — no timeout needed. CC#0/CC#32 values are sticky per the MIDI spec until the next PC message consumes them. This is correct as-designed.
+
+### 2026-03-15 — Architecture Doc v1.1 Verification
+
+**Verified implementation against architecture doc — found significant improvements:**
+
+1. **ConcurrentQueue pattern eliminates thread-safety risk** — The draft architecture assumed MeltySynth's NoteOn/NoteOff could be called from MIDI thread while Render runs on audio thread. The actual implementation is smarter: MIDI thread enqueues commands via `ConcurrentQueue<MidiCommand>`, audio thread dequeues and processes them, then renders. All Synthesizer calls happen on a single thread. This is the **correct pattern for real-time audio** and eliminates the thread-safety concern I flagged in v1.0.
+
+2. **Naming evolved: MidiMessageRouter → MidiInstrumentSwitcher** — Architecture draft used `MidiMessageRouter` but actual implementation is `MidiInstrumentSwitcher`. The new name is more descriptive (it switches instruments, not just routes messages). Updated doc to reflect reality.
+
+3. **Folder structure simplified** — Draft had separate `Audio/`, `Instruments/`, `Tray/`, `Settings/` folders. Actual implementation consolidates most components under `Services/`. This is cleaner — fewer top-level folders, easier to navigate. `Models/` and `Interfaces/` are properly separated.
+
+4. **Reconnect polling implemented correctly** — MidiDeviceService implements disconnect detection + reconnect polling with CancellationTokenSource. This addresses the concern I raised in v1.0 about MIDI disconnect handling. Well done.
+
+5. **Lesson: Verify architecture against code after initial implementation** — Architecture docs can drift from reality during rapid development. Periodic verification catches naming changes, structural evolution, and implementation improvements that strengthen the design. This verification found the ConcurrentQueue pattern (an improvement over the draft) and corrected naming mismatches before they caused confusion.
+
+6. **SettingsWindow pattern discrepancy** — Architecture doc says "tracked, disposed on close" but actual code says "create once, reuse forever (show/hide)". This is acceptable for a rarely-opened window, but event handler leaks remain a risk. Flagged for future audit, not blocking.

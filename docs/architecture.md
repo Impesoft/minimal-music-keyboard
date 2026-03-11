@@ -1,9 +1,9 @@
 # Minimal Music Keyboard — Architecture Document
 
-**Version:** 1.0 (Draft for Gren Review)
+**Version:** 1.1 (Gren Review Complete)
 **Author:** Spike (Lead Architect)
-**Date:** 2026-03-01
-**Status:** DRAFT — Pending Gren's architectural review
+**Date:** 2026-03-01 (updated 2026-03-15)
+**Status:** APPROVED — Reflects actual implementation
 
 ---
 
@@ -13,33 +13,35 @@
 MinimalMusicKeyboard/
 ├── MinimalMusicKeyboard.sln
 ├── docs/
-│   └── architecture.md
+│   ├── architecture.md
+│   └── vst3-architecture-proposal.md        # In design — Ward/Spike
 ├── src/
 │   └── MinimalMusicKeyboard/
 │       ├── MinimalMusicKeyboard.csproj
 │       ├── App.xaml / App.xaml.cs          # WinUI3 entry point
 │       ├── Program.cs                       # Main — single-instance gate, tray bootstrap
 │       ├── Core/
-│       │   ├── AppLifecycleManager.cs       # Startup/shutdown orchestration
 │       │   └── SingleInstanceGuard.cs       # Mutex-based single-instance enforcement
 │       ├── Midi/
-│       │   ├── MidiDeviceService.cs         # MIDI device enumeration + message listener
-│       │   ├── MidiMessageRouter.cs         # Parses messages, routes to audio or instrument switching
 │       │   └── MidiDeviceInfo.cs            # DTO for discovered devices
-│       ├── Audio/
-│       │   ├── AudioEngine.cs               # Synthesis via MeltySynth, WASAPI output
-│       │   └── SoundFontManager.cs          # Load/unload soundfont files
-│       ├── Instruments/
-│       │   ├── InstrumentCatalog.cs         # Maps instrument names → soundfont + bank/preset
-│       │   ├── InstrumentDefinition.cs      # Config model per instrument
-│       │   └── InstrumentSwitcher.cs        # Handles MIDI PC-triggered switching
-│       ├── Tray/
-│       │   ├── TrayIconService.cs           # Tray icon lifecycle + context menu
-│       │   └── TrayMenuBuilder.cs           # Builds context menu (instruments, settings, exit)
-│       ├── Settings/
-│       │   ├── SettingsWindow.xaml / .cs     # On-demand WinUI3 settings page
-│       │   ├── SettingsViewModel.cs         # MVVM view model
-│       │   └── AppSettings.cs               # Settings model + persistence
+│       ├── Models/
+│       │   ├── AppSettings.cs               # Settings model + persistence
+│       │   ├── AudioDeviceInfo.cs           # Audio device DTO
+│       │   ├── InstrumentButtonMapping.cs   # Button → instrument mapping
+│       │   ├── InstrumentDefinition.cs      # Instrument config (SF2 path, bank, preset)
+│       │   └── MidiEventArgs.cs             # Event data for MIDI callbacks
+│       ├── Interfaces/
+│       │   ├── IAudioEngine.cs              # Audio engine contract
+│       │   └── IMidiDeviceService.cs        # MIDI device contract
+│       ├── Services/
+│       │   ├── AppLifecycleManager.cs       # Startup/shutdown orchestration
+│       │   ├── AudioEngine.cs               # MeltySynth + NAudio WASAPI synthesis
+│       │   ├── InstrumentCatalog.cs         # Instrument catalog management
+│       │   ├── MidiDeviceService.cs         # NAudio MIDI input + disconnect handling
+│       │   ├── MidiInstrumentSwitcher.cs    # Routes MIDI → audio + instrument switching
+│       │   └── TrayIconService.cs           # System tray icon + context menu
+│       ├── Views/
+│       │   └── SettingsWindow.xaml / .cs    # On-demand settings UI
 │       └── Helpers/
 │           └── DisposableExtensions.cs
 └── tests/
@@ -48,7 +50,7 @@ MinimalMusicKeyboard/
         └── ...                              # Ed owns test strategy
 ```
 
-**Namespaces** mirror folder structure: `MinimalMusicKeyboard.Core`, `MinimalMusicKeyboard.Midi`, `MinimalMusicKeyboard.Audio`, etc.
+**Namespaces** mirror folder structure: `MinimalMusicKeyboard.Core`, `MinimalMusicKeyboard.Midi`, `MinimalMusicKeyboard.Services`, `MinimalMusicKeyboard.Models`, etc.
 
 **Target framework:** `net8.0-windows10.0.22621.0` (Windows App SDK 1.5+)
 
@@ -106,48 +108,53 @@ WASAPI shared mode for lowest-latency managed audio output without exclusive dev
 
 ### 3.1 AppLifecycleManager
 
-**Responsibility:** Orchestrates the entire app lifecycle — startup sequence, shutdown sequence, single-instance enforcement.
+**Responsibility:** Orchestrates the entire app lifecycle — startup sequence, shutdown sequence. Lives in `Services/` namespace.
+
+**Note:** `SingleInstanceGuard` is NOT owned by `AppLifecycleManager` — it lives in `Program.Main`'s using block so the mutex is released when `Application.Start()` returns.
 
 ```csharp
 public sealed class AppLifecycleManager : IDisposable
 {
     // Owns (in construction order):
-    private readonly SingleInstanceGuard _guard;
-    private readonly AppSettings _settings;
     private readonly InstrumentCatalog _catalog;
-    private readonly AudioEngine _audio;
     private readonly MidiDeviceService _midi;
-    private readonly MidiMessageRouter _router;
     private readonly TrayIconService _tray;
+    private IAudioEngine? _audioEngine;
+    private MidiInstrumentSwitcher? _switcher;
 
-    // Startup: guard → settings → catalog → audio → midi → router → tray
-    // Shutdown: router → midi → audio → tray → guard (see Section 6 for rationale)
+    // Startup: catalog → audio → midi → switcher → tray
+    // Shutdown: switcher → midi → audio → tray (see Section 6 for rationale)
 }
 ```
 
 **Startup sequence:**
-1. `SingleInstanceGuard` — acquire mutex or exit
-2. `AppSettings` — load from JSON
-3. `InstrumentCatalog` — build catalog from settings
-4. `AudioEngine` — load default soundfont, initialize WASAPI output
-5. `MidiDeviceService` — open configured MIDI input device
-6. `MidiMessageRouter` — wire MIDI events → audio engine + instrument switcher
-7. `TrayIconService` — show tray icon, build context menu
+1. `AppSettings` — load from JSON
+2. `InstrumentCatalog` — build catalog from settings
+3. `AudioEngine` — initialize WASAPI output (no soundfont loaded until first instrument selection)
+4. `MidiDeviceService` — open configured MIDI input device (enters Disconnected state if device not found)
+5. `MidiInstrumentSwitcher` — wire MIDI events → audio engine + instrument switching
+6. `TrayIconService` — show tray icon, build context menu
 
 ### 3.2 MidiDeviceService
 
+Lives in `Services/` namespace. Implements `IMidiDeviceService` interface.
+
 ```csharp
-public sealed class MidiDeviceService : IDisposable
+public sealed class MidiDeviceService : IMidiDeviceService, IDisposable
 {
     // Wraps NAudio.Midi.MidiIn
-    // Enumerates available MIDI input devices
-    // Opens/closes device by index or name
-    // Fires events: NoteOn, NoteOff, ControlChange, ProgramChange
-    // Runs on dedicated background thread (NAudio's internal callback thread)
+    // Enumerates available MIDI input devices via NAudio.Midi
+    // Opens/closes device by name
+    // Fires events: NoteOnReceived, NoteOffReceived, ControlChangeReceived, ProgramChangeReceived
+    // Runs on dedicated background thread (NAudio's internal Win32 callback thread)
+    // Implements disconnect detection + reconnect polling (see below)
 
-    event EventHandler<MidiNoteEventArgs> NoteReceived;
+    event EventHandler<MidiNoteEventArgs> NoteOnReceived;
+    event EventHandler<MidiNoteEventArgs> NoteOffReceived;
     event EventHandler<MidiControlEventArgs> ControlChangeReceived;
     event EventHandler<MidiProgramEventArgs> ProgramChangeReceived;
+    event EventHandler DeviceDisconnected;
+    event EventHandler DeviceConnected;
 }
 ```
 
@@ -163,42 +170,82 @@ NAudio's `MidiIn` wraps Win32 `midiInOpen`/`midiInClose`. If the USB MIDI device
 
 ### 3.3 AudioEngine
 
+Lives in `Services/` namespace. Implements `IAudioEngine` interface.
+
 ```csharp
-public sealed class AudioEngine : IDisposable
+public sealed class AudioEngine : IAudioEngine
 {
     // Owns: MeltySynth.Synthesizer, NAudio.Wave.WasapiOut
-    // Loads SF2 files via MeltySynth.SoundFont
-    // Processes NoteOn/NoteOff by calling Synthesizer.NoteOn/NoteOff
-    // Renders audio in WasapiOut's callback on audio thread
-    // Handles instrument preset changes (bank select + program change)
+    // Loads SF2 files via MeltySynth.SoundFont (cached in a Dictionary)
+    // Enqueues MIDI commands (NoteOn/NoteOff/SetPreset) via ConcurrentQueue<MidiCommand>
+    // Audio thread dequeues and processes commands, then renders audio
+    // Handles SF2 swapping via Volatile.Read/Write pattern (see Section 5)
 
-    void NoteOn(int channel, int key, int velocity);
-    void NoteOff(int channel, int key);
+    void NoteOn(int channel, int note, int velocity);
+    void NoteOff(int channel, int note);
     void SetPreset(int channel, int bank, int preset);
+    void SelectInstrument(int programNumber);          // lightweight preset change
+    void SelectInstrument(InstrumentDefinition inst);  // may load new SF2 on background thread
     void LoadSoundFont(string path);
+    void SetVolume(float volume);
+    void ChangeOutputDevice(string? deviceId);
+    IReadOnlyList<AudioDeviceInfo> EnumerateOutputDevices();
 }
 ```
 
-**Threading:** Audio rendering runs on WASAPI's callback thread. `NoteOn`/`NoteOff` are called from MIDI callback thread — MeltySynth's `Synthesizer` is thread-safe for these operations (note events are lock-free internally). SoundFont loading is a blocking operation that must happen on a background thread, not the audio callback.
+**Threading model (CRITICAL — per Gren's review):**
+- **MIDI callback thread** enqueues commands via `ConcurrentQueue<MidiCommand>` — never calls MeltySynth directly.
+- **Audio render thread** (WASAPI callback) dequeues commands, processes them (NoteOn/NoteOff/SetPreset), then calls `Synthesizer.Render()`.
+- **Background Task** loads new SF2 files and swaps the Synthesizer reference via `Volatile.Write`. The audio callback uses `Volatile.Read` to snapshot the reference at the start of each Read() call.
+- **SoundFont cache:** Loaded SF2 files are cached in a `Dictionary<string, SoundFont>` keyed by path. File handles are NOT held open — SF2 loading uses `using (FileStream)` blocks.
 
 ### 3.4 InstrumentCatalog
+
+Lives in `Services/` namespace. Not disposable — immutable after construction.
 
 ```csharp
 public sealed class InstrumentCatalog
 {
-    // Loaded from settings JSON
-    // Maps: instrument name → (soundfont path, bank number, preset number)
-    // Maps: MIDI Program Change number → instrument name
-    // Provides ordered list for tray menu display
+    // Loaded from %LOCALAPPDATA%\MinimalMusicKeyboard\instruments.json
+    // Creates default catalog (8 instruments) if file is missing
+    // Maps: instrument id → InstrumentDefinition
+    // Maps: MIDI Program Change number → InstrumentDefinition
+    // Thread-safe for concurrent reads (catalog is immutable after construction)
 
-    IReadOnlyList<InstrumentDefinition> Instruments { get; }
-    InstrumentDefinition? GetByProgramChange(int programNumber);
-    InstrumentDefinition? GetByName(string name);
-    InstrumentDefinition CurrentInstrument { get; }
+    IReadOnlyList<InstrumentDefinition> GetAll();
+    InstrumentDefinition? GetById(string id);
+    InstrumentDefinition? GetByProgramNumber(int programNumber);
+    void UpdateAllSoundFontPaths(string newPath);  // replaces SF2 path for all instruments
 }
 ```
 
-### 3.5 TrayIconService
+**Default catalog (8 instruments):**
+- grand-piano (PC#0), bright-piano (PC#1), electric-piano (PC#4), strings (PC#48), organ (PC#16), pad (PC#88), fingered-bass (PC#33), choir (PC#52)
+- All share placeholder `"[SoundFont Not Configured]"` path until user selects an SF2 file in settings.
+
+### 3.5 MidiInstrumentSwitcher
+
+Lives in `Services/` namespace. This is the "router" component — it subscribes to `MidiDeviceService` events and dispatches to the audio engine + catalog lookup.
+
+**Note:** Earlier architecture drafts called this `MidiMessageRouter`. The actual implementation is `MidiInstrumentSwitcher`.
+
+```csharp
+public sealed class MidiInstrumentSwitcher : IDisposable
+{
+    // Subscribes to MidiDeviceService events
+    // Routes NoteOn/NoteOff → IAudioEngine (unless note is a mapped instrument button)
+    // Routes ControlChange → bank select accumulation (CC#0 MSB, CC#32 LSB) or button trigger
+    // Routes ProgramChange → InstrumentCatalog lookup → AudioEngine.SelectInstrument
+    // Handles button mappings (8 slots) — updated via UpdateButtonMappings()
+
+    event EventHandler<InstrumentDefinition?> ActiveInstrumentChanged;
+    void UpdateButtonMappings(InstrumentButtonMapping[] mappings);
+}
+```
+
+**Bank Select accumulation pattern:** CC#0 (Bank MSB) and CC#32 (Bank LSB) are "sticky" — they persist until the next Program Change message consumes them. This follows the MIDI specification. No timeout is needed.
+
+### 3.6 TrayIconService
 
 ```csharp
 public sealed class TrayIconService : IDisposable
@@ -217,7 +264,9 @@ public sealed class TrayIconService : IDisposable
 }
 ```
 
-### 3.6 SettingsWindow
+Lives in `Services/` namespace.
+
+### 3.7 SettingsWindow
 
 **On-demand creation pattern:** The SettingsWindow is NOT kept alive when closed. It is created fresh each time the user clicks "Settings..." and disposed when closed.
 
@@ -256,45 +305,48 @@ private void OnSettingsRequested()
 ### MIDI Message Path
 
 ```
-┌──────────────┐     NAudio callback     ┌──────────────────┐
-│  MIDI Device  │ ──────────────────────► │ MidiDeviceService │
-│ (Arturia 88)  │      (background        │  (event parsing)  │
-└──────────────┘       thread)            └────────┬─────────┘
-                                                   │
-                                          typed events (NoteOn,
-                                          CC, PC, etc.)
-                                                   │
-                                                   ▼
-                                         ┌──────────────────┐
-                                         │ MidiMessageRouter │
-                                         │  (routing logic)  │
-                                         └───┬──────────┬───┘
-                                             │          │
-                                    Note/CC  │          │ Program Change
-                                    events   │          │ (instrument switch)
-                                             ▼          ▼
-                                   ┌─────────────┐  ┌──────────────────┐
-                                   │ AudioEngine  │  │ InstrumentSwitcher│
-                                   │ (MeltySynth) │  │ (catalog lookup)  │
-                                   └──────┬──────┘  └────────┬─────────┘
-                                          │                   │
-                                          │          SetPreset(bank, preset)
-                                          │◄──────────────────┘
-                                          │
-                                          ▼
-                                   ┌─────────────┐
-                                   │  WasapiOut   │
-                                   │ (audio out)  │
-                                   └─────────────┘
+┌──────────────┐     NAudio callback      ┌──────────────────┐
+│  MIDI Device  │ ───────────────────────► │ MidiDeviceService │
+│ (Arturia 88)  │   (Win32 callback        │  (event parsing)  │
+└──────────────┘    thread)                └────────┬─────────┘
+                                                    │
+                                           typed events (NoteOn,
+                                           CC, PC, etc.)
+                                                    │
+                                                    ▼
+                                     ┌────────────────────────┐
+                                     │ MidiInstrumentSwitcher │
+                                     │   (routing logic)      │
+                                     └───┬──────────────┬─────┘
+                                         │              │
+                                Note/CC  │              │ Program Change
+                                events   │              │ (→ catalog lookup)
+                                         ▼              │
+                                    ┌────────────┐      │
+                            Enqueue │ AudioEngine│◄─────┘
+                            command │ (MeltySynth│  SelectInstrument()
+                            via     │ + WASAPI)  │  (may load new SF2)
+                            ConcurrentQueue      │
+                                    └──────┬─────┘
+                                           │
+                                    Audio thread dequeues
+                                    commands + renders
+                                           │
+                                           ▼
+                                    ┌─────────────┐
+                                    │  WasapiOut   │
+                                    │ (audio out)  │
+                                    └─────────────┘
 ```
 
 **Latency budget:**
 - MIDI USB polling: ~1ms
 - NAudio callback dispatch: <1ms
-- MidiMessageRouter parse + route: <0.1ms
+- MidiInstrumentSwitcher parse + route: <0.1ms
+- ConcurrentQueue enqueue/dequeue: <0.01ms
 - MeltySynth render to buffer: ~2-5ms
-- WASAPI shared mode buffer: ~50ms (configurable)
-- **Total:** ~55ms typical (dominated by WASAPI buffer)
+- WASAPI shared mode buffer: ~20ms (current setting; was 50ms in draft)
+- **Total:** ~25-30ms typical (dominated by WASAPI buffer)
 
 ---
 
@@ -303,17 +355,17 @@ private void OnSettingsRequested()
 | Thread | Owner | Components | Notes |
 |--------|-------|-----------|-------|
 | **UI thread** (STA) | WinUI3 / DispatcherQueue | TrayIconService, SettingsWindow, AppLifecycleManager | Only used for tray menu and settings UI |
-| **MIDI callback thread** | NAudio.Midi.MidiIn | MidiDeviceService events → MidiMessageRouter | NAudio fires events on a dedicated Win32 callback thread. Keep handlers fast — no blocking. |
-| **Audio render thread** | NAudio.Wave.WasapiOut | AudioEngine (MeltySynth.Synthesizer.Render) | WASAPI calls our ISampleProvider.Read() on its own thread. MeltySynth renders here. |
-| **Background thread (occasional)** | Task.Run | SoundFont loading, settings save | Heavy I/O operations dispatched off UI thread |
+| **MIDI callback thread** | NAudio.Midi.MidiIn | MidiDeviceService events → MidiInstrumentSwitcher | NAudio fires events on a dedicated Win32 callback thread. Keep handlers fast — no blocking. MidiInstrumentSwitcher enqueues commands to AudioEngine's ConcurrentQueue. |
+| **Audio render thread** | NAudio.Wave.WasapiOut | AudioEngine (dequeue commands, Synthesizer.Render) | WASAPI calls our ISampleProvider.Read() on its own thread. Commands are dequeued and processed, then MeltySynth renders. |
+| **Background thread (occasional)** | Task.Run | SoundFont loading, settings save | Heavy I/O operations dispatched off UI thread. SF2 swaps via Volatile.Write. |
 
 ### Synchronization Boundaries
 
-1. **MIDI thread → AudioEngine:** MeltySynth `NoteOn`/`NoteOff`/`NoteOffAll` are called from the MIDI callback while the audio thread renders. **Gren note:** MeltySynth is not explicitly documented as thread-safe by its author. Before implementation, verify via code inspection that concurrent NoteOn + Render is safe. If not, add a slim lock (`SpinLock` or `lock` with minimal scope) around NoteOn/NoteOff/Render. Profile to ensure it doesn't add latency. Fallback: use a lock-free concurrent queue to buffer note events, consumed by the audio thread in Render().
+1. **MIDI thread → AudioEngine:** The MIDI callback thread enqueues commands via `ConcurrentQueue<MidiCommand>` — it never touches MeltySynth directly. The audio render thread dequeues and processes commands (calling `Synthesizer.NoteOn`/`NoteOff`/etc), then renders. This eliminates thread-safety concerns with MeltySynth — all Synthesizer calls happen on a single thread (the audio thread).
 
-2. **MIDI thread → InstrumentSwitcher → AudioEngine.SetPreset:** The `SetPreset` call changes the active bank/preset. This modifies synthesizer state. We use a lightweight `lock` around preset changes only (not per-note). Preset changes are rare (user-initiated), so contention is negligible.
+2. **MIDI thread → MidiInstrumentSwitcher → AudioEngine.SelectInstrument:** When a Program Change arrives, `MidiInstrumentSwitcher` looks up the instrument in `InstrumentCatalog` and calls `AudioEngine.SelectInstrument(InstrumentDefinition)`. This enqueues a SetPreset command. If the instrument requires a different SF2 file, `AudioEngine` dispatches `LoadSoundFont` to a background Task and swaps the Synthesizer reference via Volatile.Write (see #4 below).
 
-3. **MIDI thread → UI thread (tray update):** When instrument switches, we update the tray tooltip. Use `DispatcherQueue.TryEnqueue()` to marshal to UI thread. Fire-and-forget — MIDI thread must not wait.
+3. **MIDI thread → UI thread (tray update):** When instrument switches, `MidiInstrumentSwitcher.ActiveInstrumentChanged` fires on the MIDI callback thread. `TrayIconService` subscribes and uses `DispatcherQueue.TryEnqueue()` to marshal to UI thread. Fire-and-forget — MIDI thread must not wait.
 
 4. **SoundFont loading:** Blocks a background thread. While loading, the old soundfont remains active. Swap is atomic (replace the `Synthesizer` instance reference). We call `NoteOffAll()` before swap to avoid hanging notes.
 
@@ -336,40 +388,43 @@ Shutdown is triggered by `TrayIconService.ExitRequested` or process termination 
 **Exact ordered shutdown sequence:**
 
 ```
-1. MidiMessageRouter.Dispose()
+1. MidiInstrumentSwitcher.Dispose()
    → Unsubscribes from MidiDeviceService events
    → Ensures no new messages are routed
 
 2. MidiDeviceService.Dispose()
+   → Stops reconnect polling (CancellationTokenSource.Cancel)
    → Calls MidiIn.Stop()
    → Calls MidiIn.Dispose()
    → MIDI callback thread terminates
    → No more MIDI events can fire
 
 3. AudioEngine.Dispose()
-   → Calls Synthesizer.NoteOffAll() (silence all voices)
+   → Commands are drained from ConcurrentQueue
    → Calls WasapiOut.Stop()
    → Calls WasapiOut.Dispose()
    → Audio render thread terminates
-   → Nulls Synthesizer reference (SoundFont byte arrays become GC-eligible)
-   → Note: SoundFont file loading must use `using` on FileStream — file handle
-     must not remain open after load completes
+   → Nulls Synthesizer reference (SoundFont data becomes GC-eligible)
+   → Cached SoundFont objects are disposed (if IDisposable)
+   → Note: SoundFont file loading uses `using` on FileStream — no file handles
+     remain open after load completes
 
 4. TrayIconService.Dispose()
    → Removes tray icon via TaskbarIcon.Dispose()
    → Icon disappears from notification area
 
-5. SingleInstanceGuard.Dispose()
+5. SingleInstanceGuard.Dispose() — called in Program.Main's using block
    → Releases named mutex
 
 6. Application.Exit()
 ```
 
 **Why this order:**
-- MIDI stops first → no new note events can arrive at a disposed audio engine
-- Audio stops second → all voices silenced, output device released
-- Tray stops third → icon removed (user sees app is gone)
-- Mutex last → another instance can now start
+- Switcher stops first → no new routing decisions can be made
+- MIDI stops second → no new events can arrive at a disposed audio engine
+- Audio stops third → command queue drained, output device released
+- Tray stops fourth → icon removed (user sees app is gone)
+- Mutex last (in Program.Main) → another instance can now start
 
 **Guard against partial disposal:** Each `Dispose()` is wrapped in try/catch. A failure in step 2 must not prevent steps 3-6. Log errors but continue.
 
@@ -385,45 +440,17 @@ Shutdown is triggered by `TrayIconService.ExitRequested` or process termination 
 
 Using `Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)`. Not roaming — MIDI device names are machine-specific.
 
-### Schema
+### Schema (Current — AppSettings.cs)
 
-```json
-{
-  "version": 1,
-  "midi": {
-    "inputDeviceName": "Arturia KeyLab 88 MkII",
-    "autoConnect": true,
-    "reconnectOnDisconnect": true
-  },
-  "audio": {
-    "wasapiBufferMs": 50,
-    "masterVolume": 0.8
-  },
-  "instruments": {
-    "defaultInstrument": "Grand Piano",
-    "catalog": [
-      {
-        "name": "Grand Piano",
-        "soundFontPath": "soundfonts\\GeneralUser.sf2",
-        "bank": 0,
-        "preset": 0,
-        "programChangeNumber": 0
-      },
-      {
-        "name": "Electric Piano",
-        "soundFontPath": "soundfonts\\GeneralUser.sf2",
-        "bank": 0,
-        "preset": 4,
-        "programChangeNumber": 4
-      }
-    ]
-  },
-  "startup": {
-    "runOnWindowsStartup": false,
-    "startMinimized": true
-  }
-}
-```
+The current `AppSettings` model includes:
+- `MidiDeviceName` (string?) — saved MIDI device name
+- `AudioOutputDeviceId` (string?) — WASAPI device ID
+- `Volume` (float) — master volume 0.0–2.0
+- `ButtonMappings` (InstrumentButtonMapping[8]) — MIDI note/CC → instrument mappings
+
+**Note:** The catalog documents reference a more elaborate settings structure with nested `midi`/`audio`/`instruments`/`startup` sections. The actual implementation uses a flatter model. Button mappings (8 slots) are stored in `AppSettings`, while the instrument catalog (8 default instruments: grand-piano, bright-piano, electric-piano, strings, organ, pad, fingered-bass, choir) is stored separately in `instruments.json`.
+
+**Current state:** The app ships with 8 default catalog instruments but only 8 button mapping slots. This may cause confusion when users try to map all catalog instruments to buttons. Ward/Spike are aware and evaluating whether to expand button slots or reduce catalog size for MVP.
 
 **Persistence strategy:**
 - Load on startup (deserialize with `System.Text.Json`)
@@ -434,7 +461,7 @@ Using `Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)
 
 ### SoundFont File Location
 
-SoundFonts stored in app directory under `soundfonts/`. Paths in settings are relative to app root. Users can also specify absolute paths.
+The instrument catalog specifies SF2 paths per instrument. Paths can be absolute or relative to the app directory. The default catalog uses placeholder `"[SoundFont Not Configured]"` — users must select an SF2 file via settings before playing.
 
 ---
 
@@ -450,12 +477,13 @@ SoundFonts stored in app directory under `soundfonts/`. Paths in settings are re
 
 ### How It Works
 
-1. User configures `programChangeNumber` per instrument in settings (0-127)
-2. `MidiMessageRouter` receives a PC message from `MidiDeviceService`
-3. Router looks up the program number in `InstrumentCatalog.GetByProgramChange(pc)`
-4. If found, `InstrumentSwitcher` calls `AudioEngine.SetPreset(channel, bank, preset)`
-5. Tray tooltip updates to show new instrument name
-6. If no mapping exists for that PC number, the message is ignored (no error)
+1. User configures `programNumber` per instrument in the catalog (0-127)
+2. `MidiInstrumentSwitcher` receives a PC message from `MidiDeviceService`
+3. Switcher looks up the program number in `InstrumentCatalog.GetByProgramNumber(pc)`
+4. If found, switcher calls `AudioEngine.SelectInstrument(InstrumentDefinition)`
+5. AudioEngine loads the SF2 file (if not already cached) and enqueues a SetPreset command
+6. Tray tooltip updates to show new instrument name
+7. If no mapping exists for that PC number, the message is ignored (no error)
 
 ### Channel Handling
 
@@ -465,7 +493,36 @@ All operations on **MIDI Channel 1** by default (configurable). The Arturia KeyL
 
 For soundfonts with >128 presets, we support the standard Bank Select flow:
 - CC #0 (Bank Select MSB) → CC #32 (Bank Select LSB) → PC
-- The router accumulates bank select messages and applies them with the next PC
+- `MidiInstrumentSwitcher` accumulates bank select messages and applies them with the next PC
+- Bank values are "sticky" per the MIDI spec — they persist until consumed by a PC message (no timeout)
+
+---
+
+## 9. VST3 / Multi-Backend Instrument Support
+
+**Status:** In design — see `docs/vst3-architecture-proposal.md`
+
+The current architecture supports **SF2 soundfonts only** via MeltySynth. `InstrumentDefinition` does not yet discriminate backend types (SF2 vs VST3). Ward and Spike are evaluating:
+1. VST3 hosting via NAudio.Vst (or direct VST3 SDK P/Invoke)
+2. Extending `InstrumentDefinition` with a `BackendType` enum
+3. `AudioEngine` composition: single-backend vs multi-backend dispatcher
+4. Thread-safety implications of VST3's async processing model
+
+This section will be expanded once the design is finalized.
+
+---
+
+## 9. VST3 / Multi-Backend Instrument Support
+
+**Status:** In design — see `docs/vst3-architecture-proposal.md`
+
+The current architecture supports **SF2 soundfonts only** via MeltySynth. `InstrumentDefinition` does not yet discriminate backend types (SF2 vs VST3). Ward and Spike are evaluating:
+1. VST3 hosting via NAudio.Vst (or direct VST3 SDK P/Invoke)
+2. Extending `InstrumentDefinition` with a `BackendType` enum
+3. `AudioEngine` composition: single-backend vs multi-backend dispatcher
+4. Thread-safety implications of VST3's async processing model
+
+This section will be expanded once the design is finalized.
 
 ---
 

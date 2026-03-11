@@ -38,3 +38,15 @@
 - **Threading:** Three threads in play — UI (STA), MIDI callback (NAudio), audio render (WASAPI). MeltySynth is thread-safe for note events across MIDI/audio threads.
 - **Memory Budget:** Estimated 29-44MB idle, well within 50MB target.
 - **Open for Gren:** DI container weight, MIDI reconnect strategy, multi-SF2 support, packaged vs unpackaged deployment.
+
+### 2026-07-17 — VST3 Architecture Proposal
+- **IInstrumentBackend abstraction:** New interface in `Interfaces/IInstrumentBackend.cs` decouples synthesis from AudioEngine. Backends are ISampleProvider audio producers. SF2 and VST3 implement the same contract.
+- **AudioEngine becomes mixer host:** Owns WasapiOut + MixingSampleProvider. Routes MIDI to active backend. Backends produce audio; engine mixes and outputs. No more SF2-specific code in AudioEngine itself.
+- **Out-of-process VST3 bridge:** Recommended `mmk-vst3-bridge.exe` (native C++) communicating via named pipe (commands) + memory-mapped file (audio). Crash isolation is critical for a tray-resident app running hours/days. IPC latency <1ms per block — imperceptible vs 20ms WASAPI buffer.
+- **InstrumentDefinition extended:** Added `InstrumentType` enum discriminator (SoundFont=0, Vst3=1), `Vst3PluginPath`, `Vst3PresetPath`. JSON backward-compatible via default enum value.
+- **LoadSoundFont removed from IAudioEngine:** SF2-specific method replaced by type-dispatching `SelectInstrument(InstrumentDefinition)`.
+- **SoundFontBackend extraction:** MeltySynth Synthesizer, SoundFont cache, command queue drain, and render logic move from AudioEngine to `Services/Backends/SoundFontBackend.cs`. This is the highest-risk Phase 1 change — audio hot path refactoring.
+- **Catalog stays flat:** No grouping by type. MIDI PC routing is type-agnostic. UI groups via LINQ.
+- **Phased delivery:** Phase 1 (abstraction + SF2 backend extraction), Phase 2 (managed IPC client), Phase 3 (native bridge), Phase 4 (settings UI).
+- **Rejected alternatives:** In-process COM P/Invoke (~2000 lines unsafe, no crash isolation), VST.NET (no mature library), CLAP-only (users have VST3 plugins).
+- **Open for Gren:** Bridge lifecycle management, audio thread spin-wait vs semaphore, bridge language (C++ vs Rust), plugin GUI support, CLAP as future addition.

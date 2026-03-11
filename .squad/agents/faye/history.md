@@ -70,3 +70,28 @@
   - Confirmed `Volatile.Read/Write` pattern for thread-safe Synthesizer swaps
 - Jet's build validated and corrected these details; Faye's AudioEngine now matches actual APIs
 - Both histories now synchronized on library contracts and threading model
+
+### Sprint 2 — Catalog Fix + VST3 Research (2026-03-01)
+
+**Instrument catalog 6→8 fix:**
+- `BuildDefaultCatalog()` in `InstrumentCatalog.cs` had only 6 default instruments, but `AppSettings.cs` declares 8 button mapping slots (indices 0-7)
+- Added 2 instruments to complete the set:
+  - `fingered-bass` (PC 33, Category: Bass)
+  - `choir` (PC 52 = Choir Aahs, Category: Choir)
+- Chosen to complement existing piano/strings/organ/pad with rhythm (bass) and vocal (choir) timbres
+- Note: existing users' persisted `instruments.json` files are unaffected (loaded from disk, not defaults). Only fresh installs or manual deletions trigger the 8-instrument default catalog.
+
+**VST3 hosting research (for Spike's architecture design):**
+- Created `docs/vst3-dotnet-options.md` evaluating 5 approaches
+- **Key finding:** No production-ready NuGet package exists for hosting VST3 plugins in C#
+  - VST.NET = VST2 only (Vst3 stubs incomplete)
+  - NPlug = plugin *creation* SDK, not hosting
+  - AudioPlugSharp = plugin creation with C++/CLI, not general hosting
+- **Recommended approach:** Option A (Direct COM P/Invoke)
+  - ~600 LOC of `[ComImport]` interface definitions + marshaling
+  - Minimum interfaces: `IPluginFactory3`, `IComponent`, `IAudioProcessor`, `IEditController`
+  - Main risk: COM lifetime management and `ProcessData` struct marshaling (must pin audio buffers)
+- **Fallback:** Option C (out-of-process bridge) if crashes/stability issues arise
+  - Adds 5-10ms latency but isolates plugin crashes from main app
+  - Requires shipping a native bridge.exe (C++ or Rust)
+- For Arturia KeyLab 88 MkII: forward NoteOn/NoteOff/PitchBend/CC#64 to VST3; mix VST3 output with MeltySynth in `IWaveProvider.Read()` callback

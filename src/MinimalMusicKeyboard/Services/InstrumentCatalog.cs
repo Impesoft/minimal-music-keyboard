@@ -122,6 +122,8 @@ public sealed class InstrumentCatalog
         new() { Id = "strings",        DisplayName = "Strings",        SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 48, Category = "Strings" },
         new() { Id = "organ",          DisplayName = "Organ",          SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 16, Category = "Organ"   },
         new() { Id = "pad",            DisplayName = "Pad",            SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 88, Category = "Pad"     },
+        new() { Id = "fingered-bass",  DisplayName = "Fingered Bass",  SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 33, Category = "Bass"    },
+        new() { Id = "choir",          DisplayName = "Choir Aahs",     SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 52, Category = "Choir"   },
     ];
 
     private static void SaveCatalog(string path, List<InstrumentDefinition> instruments)

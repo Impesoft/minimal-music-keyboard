@@ -4,6 +4,85 @@ _Append-only. Managed by Scribe. Agents write to .squad/decisions/inbox/ — Scr
 
 <!-- Entries appended below in reverse-chronological order -->
 
+## Session: 2026-03-11 — Batch 6: Phase 3 & 4 Completion
+
+### Faye: Phase 3 Complete — mmk-vst3-bridge Native Project
+
+**Author:** Faye (Backend Dev)  
+**Date:** 2026-03-11  
+**Requested by:** Ward Impe  
+**Status:** Ready for Phase 3b (VST3 SDK integration)
+
+**Summary:** Created the native C++ bridge project at `src/mmk-vst3-bridge/`. The bridge connects to the host's named pipe, opens the host-owned memory-mapped audio buffer, and runs a JSON command loop. Audio rendering is stubbed (silence) with TODOs for VST3 SDK integration.
+
+**Delivered:**
+- CMake + vcpkg setup (`CMakeLists.txt`, `vcpkg.json`)
+- Bridge entry point and IPC client (named pipe client, JSON line protocol)
+- Shared memory writer with MMF header validation and atomic write position updates
+- Audio render thread with a lock-free MIDI event queue (stubbed render)
+- README with build instructions and VST3 SDK setup note
+
+**Notes:** The VST3 SDK is not bundled. Clone `https://github.com/steinbergmedia/vst3sdk` into `extern/vst3sdk` when wiring up real plugin loading.
+
+---
+
+### Jet: Phase 4 Complete — VST3 Settings UI
+
+**Author:** Jet (Windows Dev)  
+**Date:** 2026-03-11  
+**Phase:** 4 — VST3 instrument configuration UI  
+**Status:** IMPLEMENTED — Build verified (0 errors)
+
+**What Was Built:**
+
+**Settings UI Extensions to `SettingsWindow.xaml.cs`:**
+- **Instrument Type Toggle:** Each slot now has a RadioButtons control to select between "SF2 (SoundFont)" and "VST3 Plugin"
+- **SF2 Panel (existing):** Shows when SF2 type is selected
+  - Instrument catalog combo box
+  - SoundFont path display with Browse button
+- **VST3 Panel (new):** Shows when VST3 type is selected
+  - Plugin path display with Browse button for `.vst3` files
+  - Preset path display with Browse button for `.vstpreset` files (optional)
+- **Dynamic Visibility:** Panels show/hide based on the selected instrument type
+
+**File Pickers:**
+- `PickVst3PluginFileAsync()` — WinUI3 FileOpenPicker for `.vst3` files
+- `PickVst3PresetFileAsync()` — WinUI3 FileOpenPicker for `.vstpreset` files
+- Both use `InitializeWithWindow.Initialize()` pattern for WinUI3 handle initialization
+
+**Backend Integration in `AudioEngine.cs`:**
+- Added `Vst3BridgeBackend _vst3Backend` field
+- Registered VST3 backend's sample provider with the mixer
+- Split `SelectInstrument()` into type-specific handlers:
+  - `HandleSoundFontInstrument()` — existing SF2 logic (unchanged)
+  - `HandleVst3Instrument()` — new VST3 loading path
+- VST3 instruments trigger backend switch + async `LoadAsync()` call
+- Added `_vst3Backend.Dispose()` to cleanup sequence
+
+**Catalog Integration in `InstrumentCatalog.cs`:**
+- Added `AddOrUpdateVst3Instrument(InstrumentDefinition)` method
+- VST3 slot instruments (id: `vst3-slot-{N}`) are persisted to `instruments.json`
+- VST3 definitions retrieved via `GetById()` like SF2 instruments
+
+**Design Decisions:**
+1. **Slot-based VST3 Instruments:** Each VST3 slot gets a unique `InstrumentDefinition` stored in the catalog, not just a mapping reference. This keeps the architecture consistent (all instruments come from the catalog).
+2. **Catalog Persistence:** VST3 instruments are added to `instruments.json` via `AddOrUpdateVst3Instrument()`. This ensures VST3 configurations survive app restarts and are discoverable via `GetById()`.
+3. **No Breaking Changes:** SF2 instrument selection continues to work exactly as before. All existing SF2 workflows are untouched.
+4. **FileOpenPicker Handle Pattern:** Used `InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this))` for proper WinUI3 initialization.
+
+**Build Verification:** ✅ Build succeeded — 0 errors, 2 harmless warnings (CS0414: unused `_frameSize` field).
+
+**Files Changed:**
+- `src/MinimalMusicKeyboard/Views/SettingsWindow.xaml.cs`
+- `src/MinimalMusicKeyboard/Services/AudioEngine.cs`
+- `src/MinimalMusicKeyboard/Services/InstrumentCatalog.cs`
+
+**Known Limitations:**
+- **VST3 Bridge Status Indicator:** Not implemented in UI (requires `Vst3BridgeBackend.BridgeFaulted` event wiring; can be added in future phase).
+- **VST3 Bridge Not Included:** The native C++ VST3 bridge is Phase 3. This UI allows configuration but the backend will report `IsReady=false` until the bridge is built.
+
+---
+
 ## Session: 2026-03-11 — Batch 5: Phase 2 Fix-Up (Gren's 3 Rejections)
 
 ### Jet: Phase 2 Fixes — Vst3BridgeBackend IPC, Audio Thread, Dispose

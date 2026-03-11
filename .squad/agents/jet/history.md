@@ -27,6 +27,79 @@
 
 <!-- append new learnings below -->
 
+### Session: Phase 2 Fix-Up — Gren's 3 REJECTED issues (2026-03-11, Latest)
+
+**Context:** Faye implemented Vst3BridgeBackend (Phase 2). Gren rejected with 3 issues (1 blocking, 2 required). Faye locked out; Jet applied fixes.
+
+**Fix 1 — IPC resource ownership reversed (BLOCKING):**
+The original implementation had the host connecting as a `NamedPipeClientStream` and opening an existing MMF (`MemoryMappedFile.OpenExisting`). Per the approved spec (vst3-architecture-proposal.md §3.2), the host must be the **server** side:
+- Changed `NamedPipeClientStream` → `NamedPipeServerStream` (host creates pipe server, waits for bridge to connect)
+- Changed `MemoryMappedFile.OpenExisting()` → `MemoryMappedFile.CreateNew()` (host creates MMF, writes header)
+- Changed PID in names from `_bridgeProcess.Id` (bridge) → `Process.GetCurrentProcess().Id` (host)
+- Reordered flow: create IPC resources → launch bridge → wait for connection → send load command
+
+**Fix 2 — String allocations on audio thread (REQUIRED):**
+`NoteOn()`, `NoteOff()`, `NoteOffAll()`, `SetProgram()` were allocating JSON strings inline via string interpolation (`$"..."`). These are called from the WASAPI audio render thread and must not allocate.
+- Added `MidiCommand` readonly struct (discriminated union with `Kind` enum: NoteOn, NoteOff, NoteOffAll, SetProgram, Load, Shutdown)
+- Changed `Channel<string>` → `Channel<MidiCommand>`
+- Audio thread methods now write stack-allocated structs to the channel (zero heap allocation)
+- Added `SerializeCommand(MidiCommand)` method that formats JSON in the background `RunPipeWriterAsync()` task
+- All string allocation moved off the audio thread to the drain task thread
+
+**Fix 3 — Dispose() race prevents shutdown command (REQUIRED):**
+`Dispose()` was canceling the writer task (`_writerCts.Cancel()`) immediately after enqueueing the shutdown command, then killing the bridge. The drain task would throw `OperationCanceledException` before sending the command.
+- After completing the channel, wait up to 500ms for the writer task to drain: `_pipeWriterTask?.Wait(TimeSpan.FromMilliseconds(500))`
+- After writer exits, give bridge 2s graceful exit window: `_bridgeProcess.WaitForExit(2000)` before force-kill
+- Move `_writerCts?.Cancel()` to the end (cleanup only, after writer task exited)
+
+**Build result:** `dotnet build --no-incremental` → **Build succeeded in ~8.6s, 0 errors, 2 warnings** (CS0414 about unused `_frameSize` field — harmless, retained for consistency).
+
+**Scribe actions:**
+- Created orchestration log: `.squad/orchestration-log/2026-03-11T21-10-33Z-jet-phase2-fixes.md`
+- Created session log: `.squad/log/2026-03-11T21-10-33Z-phase2-fixes.md`
+- Merged decision into `.squad/decisions.md`
+- Deleted inbox files: `jet-phase2-fixes.md`, `gren-phase2-review.md`
+
+**Key learnings:**
+1. **IPC ownership matters for crash resilience:** Host-as-owner (pipe server + MMF creator) ensures IPC handles survive bridge crashes. Bridge-as-owner would require re-creating resources on every restart.
+2. **Audio thread is zero-allocation hot path:** Even small string allocations create GC pressure that can cause missed WASAPI callbacks over hours of runtime. Use struct channels and serialize off-thread.
+3. **Graceful shutdown requires coordination:** Cancel tokens preempt async work. Must wait for drain tasks to complete before killing child processes, or "best-effort" commands never get sent.
+
+### Session: Phase 1 Fix-Up — Gren's 3 REJECTED issues (2026-03-11)
+
+**Context:** Faye implemented Vst3BridgeBackend (Phase 2). Gren rejected with 3 issues (1 blocking, 2 required). Faye locked out; Jet applied fixes.
+
+**Fix 1 — IPC resource ownership reversed (BLOCKING):**
+The original implementation had the host connecting as a `NamedPipeClientStream` and opening an existing MMF (`MemoryMappedFile.OpenExisting`). Per the approved spec (vst3-architecture-proposal.md §3.2), the host must be the **server** side:
+- Changed `NamedPipeClientStream` → `NamedPipeServerStream` (host creates pipe server, waits for bridge to connect)
+- Changed `MemoryMappedFile.OpenExisting()` → `MemoryMappedFile.CreateNew()` (host creates MMF, writes header)
+- Changed PID in names from `_bridgeProcess.Id` (bridge) → `Process.GetCurrentProcess().Id` (host)
+- Reordered flow: create IPC resources → launch bridge → wait for connection → send load command
+
+**Fix 2 — String allocations on audio thread (REQUIRED):**
+`NoteOn()`, `NoteOff()`, `NoteOffAll()`, `SetProgram()` were allocating JSON strings inline via string interpolation (`$"..."`). These are called from the WASAPI audio render thread and must not allocate.
+- Changed `Channel<string>` → `Channel<MidiCommand>` (readonly struct)
+- Audio thread methods now write stack-allocated structs to the channel (zero heap allocation)
+- Added `SerializeCommand(MidiCommand)` that formats JSON in the background `RunPipeWriterAsync()` task
+- All string allocation moved off the audio thread to the drain task thread
+
+**Fix 3 — Dispose() race prevents shutdown command (REQUIRED):**
+`Dispose()` was canceling the writer task (`_writerCts.Cancel()`) immediately after enqueueing the shutdown command, then killing the bridge. The drain task would throw `OperationCanceledException` before sending the command.
+- After completing the channel, wait up to 500ms for the writer task to drain: `_pipeWriterTask?.Wait(TimeSpan.FromMilliseconds(500))`
+- After writer exits, give bridge 2s graceful exit window: `_bridgeProcess.WaitForExit(2000)` before force-kill
+- Move `_writerCts?.Cancel()` to the end (cleanup only, after writer task exited)
+
+**Build result:** `dotnet build --no-incremental` → **Build succeeded in ~8.6s, 0 errors, 2 warnings** (CS0414 about unused `_frameSize` field — harmless, retained for consistency).
+
+**Scribe actions:**
+- Created decision doc: `.squad/decisions/inbox/jet-phase2-fixes.md`
+- Updated history: `.squad/agents/jet/history.md`
+
+**Key learnings:**
+1. **IPC ownership matters for crash resilience:** Host-as-owner (pipe server + MMF creator) ensures IPC handles survive bridge crashes. Bridge-as-owner would require re-creating resources on every restart.
+2. **Audio thread is zero-allocation hot path:** Even small string allocations create GC pressure that can cause missed WASAPI callbacks over hours of runtime. Use struct channels and serialize off-thread.
+3. **Graceful shutdown requires coordination:** Cancel tokens preempt async work. Must wait for drain tasks to complete before killing child processes, or "best-effort" commands never get sent.
+
 ### Session: Phase 1 Fix-Up — Gren's 3 REJECTED issues (2026-03-11)
 
 **Context:** Faye implemented the VST3 refactor Phase 1. Gren rejected with 3 issues. Faye locked out; Jet applied fixes.

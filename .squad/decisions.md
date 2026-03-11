@@ -4,6 +4,75 @@ _Append-only. Managed by Scribe. Agents write to .squad/decisions/inbox/ — Scr
 
 <!-- Entries appended below in reverse-chronological order -->
 
+## Session: 2026-03-11 — Batch 5: Phase 2 Fix-Up (Gren's 3 Rejections)
+
+### Jet: Phase 2 Fixes — Vst3BridgeBackend IPC, Audio Thread, Dispose
+
+# Decision: Jet Phase 2 Fixes — Vst3BridgeBackend
+
+**Author:** Jet (Windows Dev, standing in for Faye)  
+**Date:** 2026-03-11  
+**Status:** IMPLEMENTED — Pending Gren re-review  
+**Context:** Gren rejected Phase 2 with 1 blocking + 2 required issues. Faye locked out. Jet applied all fixes.
+
+## Issues & Resolutions
+
+### Fix 1: IPC Resource Ownership (BLOCKING) ✅
+**Issue:** Implementation had host as client and bridge opening existing MMF. Per spec (§3.2), host must be server and **create** IPC resources.  
+**Resolution:**
+- Changed `NamedPipeClientStream` → `NamedPipeServerStream` (host creates pipe server, waits for bridge to connect)
+- Changed `MemoryMappedFile.OpenExisting()` → `MemoryMappedFile.CreateNew()` (host creates MMF, writes header)
+- Changed PID in names from `_bridgeProcess.Id` (bridge) → `Process.GetCurrentProcess().Id` (host)
+- Reordered flow: create IPC resources → launch bridge → wait for connection → send load command
+
+**Rationale:** Host-as-owner ensures IPC handles survive bridge crashes. Names stable across restarts.
+
+### Fix 2: String Allocations on Audio Thread (REQUIRED) ✅
+**Issue:** `NoteOn()`, `NoteOff()`, `NoteOffAll()`, `SetProgram()` allocating JSON strings via `$"..."` interpolation. Called from WASAPI audio render thread (zero-allocation hot path).  
+**Resolution:**
+- Added `MidiCommand` readonly struct (discriminated union pattern with `Kind` enum)
+- Changed `Channel<string>` → `Channel<MidiCommand>`
+- Audio thread methods now write stack-allocated structs to channel (zero heap allocation)
+- Added `SerializeCommand(MidiCommand)` method that formats JSON in background `RunPipeWriterAsync()` task
+- All string allocation moved off audio thread to drain task thread
+
+**Rationale:** Audio thread must meet hard real-time deadlines. Even small allocations create GC pressure that causes missed WASAPI callbacks over hours of runtime.
+
+### Fix 3: Dispose() Race (REQUIRED) ✅
+**Issue:** `Dispose()` calling `_writerCts.Cancel()` immediately after enqueuing shutdown command, then killing bridge. Drain task threw `OperationCanceledException` before sending the shutdown command over the pipe.  
+**Resolution:**
+- After completing the channel, wait up to 500ms for writer task to drain: `_pipeWriterTask?.Wait(TimeSpan.FromMilliseconds(500))`
+- After writer task exits, give bridge 2 seconds to exit gracefully: `_bridgeProcess.WaitForExit(2000)` before force-kill
+- Move `_writerCts?.Cancel()` to end (cleanup only, after writer task already exited)
+- Updated doc comment to reflect "best-effort graceful shutdown" per spec §4.5
+
+**Rationale:** Must wait for drain tasks to complete before killing child processes, or "best-effort" commands never get sent. Graceful shutdown gives bridge time to clean up COM interfaces.
+
+## Build Verification
+
+**Command:** `dotnet build src\MinimalMusicKeyboard\MinimalMusicKeyboard.csproj --no-incremental`
+
+**Result: ✅ Build succeeded — 0 errors**
+
+```
+Build succeeded in ~8.6s
+Warnings: 2 (CS0414: unused '_frameSize' field — harmless, retained for consistency)
+Errors: 0
+```
+
+## Files Changed
+
+- `src/MinimalMusicKeyboard/Services/Vst3BridgeBackend.cs` — 3 fixes applied
+
+## Status & Next Steps
+
+✅ All 3 issues (1 blocking, 2 required) resolved  
+✅ Build passes with 0 errors  
+⏳ Gren re-review required before Phase 3 begins  
+⏳ Phase 3 (native C++ bridge) unblocked after re-review approval
+
+---
+
 ## Session: 2026-03-11 — Batch 4: Phase 2 Completion & Phase 1 Fix Verification
 
 ### Faye: Phase 2 VST3BridgeBackend Complete

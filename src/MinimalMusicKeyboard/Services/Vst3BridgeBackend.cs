@@ -17,8 +17,8 @@ namespace MinimalMusicKeyboard.Services;
 /// VST3 instrument backend that delegates audio synthesis to <c>mmk-vst3-bridge.exe</c>.
 ///
 /// <para><b>IPC transport:</b><br/>
-/// Commands (host → bridge) are sent as JSON lines over a <see cref="NamedPipeClientStream"/>.
-/// Audio is transferred via a <see cref="MemoryMappedFile"/> ring buffer (read-only from this side).</para>
+/// Commands (host → bridge) are sent as JSON lines over a <see cref="NamedPipeServerStream"/> (host is server).
+/// Audio is transferred via a <see cref="MemoryMappedFile"/> ring buffer (host creates, bridge writes).</para>
 ///
 /// <para><b>Bridge state machine:</b>
 /// <c>NotStarted → Starting → Running → Faulted → Disposed</c>.
@@ -29,8 +29,8 @@ namespace MinimalMusicKeyboard.Services;
 /// <para><b>Threading contract (inherited from <see cref="IInstrumentBackend"/>):</b><br/>
 /// <see cref="NoteOn"/>, <see cref="NoteOff"/>, <see cref="NoteOffAll"/>, and
 /// <see cref="SetProgram"/> are called from the WASAPI audio render thread. They enqueue
-/// JSON command strings into an unbounded <see cref="Channel{T}"/> — no allocations, no blocking.
-/// A dedicated background <see cref="Task"/> drains the channel and writes to the named pipe.
+/// MidiCommand structs into an unbounded <see cref="Channel{T}"/> — no allocations, no blocking.
+/// A dedicated background <see cref="Task"/> drains the channel, serializes to JSON, and writes to the named pipe.
 /// <see cref="Read"/> is also called on the audio render thread and copies from shared memory into
 /// the output buffer without allocating.</para>
 /// </summary>
@@ -48,7 +48,7 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
     // ── IPC resources ─────────────────────────────────────────────────────────
 
     private Process? _bridgeProcess;
-    private NamedPipeClientStream? _pipeClient;
+    private NamedPipeServerStream? _pipeServer;
     private StreamWriter? _pipeWriter;
     private StreamReader? _pipeReader;
     private MemoryMappedFile? _mmf;
@@ -56,7 +56,19 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
 
     // ── Command channel (audio thread → pipe writer task, lock-free) ──────────
 
-    private readonly Channel<string> _commandChannel = Channel.CreateUnbounded<string>(
+    private readonly struct MidiCommand
+    {
+        public enum Kind : byte { NoteOn, NoteOff, NoteOffAll, SetProgram, Load, Shutdown }
+        public Kind CommandKind { get; init; }
+        public int Channel { get; init; }
+        public int Pitch { get; init; }
+        public int Velocity { get; init; }
+        public int Program { get; init; }
+        public string? Path { get; init; }
+        public string? Preset { get; init; }
+    }
+
+    private readonly Channel<MidiCommand> _commandChannel = Channel.CreateUnbounded<MidiCommand>(
         new UnboundedChannelOptions { SingleReader = true, AllowSynchronousContinuations = false });
 
     private Task? _pipeWriterTask;
@@ -197,7 +209,33 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
 
         try
         {
-            // ── Step 1: Launch bridge process ─────────────────────────────────
+            // ── Step 1: Create IPC resources (host is server) ─────────────────
+            int hostPid = Process.GetCurrentProcess().Id;
+            var pipeName = $"mmk-vst3-{hostPid}";
+            var mmfName = $"mmk-vst3-audio-{hostPid}";
+
+            // Host creates named pipe server
+            _pipeServer = new NamedPipeServerStream(
+                pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous);
+
+            // Host creates shared-memory audio buffer
+            // Header (16 bytes) + audio data (960 frames * 2 channels * 4 bytes = 7680 bytes)
+            const int frameSize = 960;
+            long mmfSize = MmfHeaderSize + (frameSize * AudioChannels * sizeof(float));
+            _mmf = MemoryMappedFile.CreateNew(mmfName, mmfSize, MemoryMappedFileAccess.ReadWrite);
+            _mmfView = _mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.ReadWrite);
+
+            // Write MMF header
+            _mmfView.Write(0, MmfMagic);      // magic
+            _mmfView.Write(4, 1);              // version
+            _mmfView.Write(8, frameSize);      // frameSize
+            _mmfView.Write(12, 0);             // writePos (initial)
+
+            _frameSize = frameSize;
+            _audioWorkBuffer = new float[frameSize * AudioChannels];
+
+            // ── Step 2: Launch bridge process ─────────────────────────────────
             var psi = new ProcessStartInfo
             {
                 FileName        = bridgeExePath,
@@ -206,47 +244,28 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
             };
             _bridgeProcess = Process.Start(psi)
                 ?? throw new InvalidOperationException("Process.Start returned null for bridge process.");
-            int pid = _bridgeProcess.Id;
 
-            // ── Step 2: Connect named pipe (bridge is the server) ─────────────
-            _pipeClient = new NamedPipeClientStream(
-                ".", $"mmk-vst3-{pid}", PipeDirection.InOut, PipeOptions.Asynchronous);
-
+            // ── Step 3: Wait for bridge to connect to pipe ────────────────────
             using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
             connectCts.CancelAfter(TimeSpan.FromSeconds(5));
-            await _pipeClient.ConnectAsync(connectCts.Token).ConfigureAwait(false);
+            await _pipeServer.WaitForConnectionAsync(connectCts.Token).ConfigureAwait(false);
 
-            _pipeWriter = new StreamWriter(_pipeClient, Encoding.UTF8, bufferSize: 4096, leaveOpen: true)
+            _pipeWriter = new StreamWriter(_pipeServer, Encoding.UTF8, bufferSize: 4096, leaveOpen: true)
             {
                 AutoFlush = false,
             };
-            _pipeReader = new StreamReader(_pipeClient, Encoding.UTF8,
+            _pipeReader = new StreamReader(_pipeServer, Encoding.UTF8,
                 detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
 
-            // ── Step 3: Open shared-memory audio buffer (bridge creates the MMF) ──
-            _mmf = MemoryMappedFile.OpenExisting(
-                $"mmk-vst3-audio-{pid}", MemoryMappedFileRights.Read);
-            _mmfView = _mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
-
-            // Validate magic and read frame size from header
-            int magic = _mmfView.ReadInt32(0);
-            if (magic != MmfMagic)
-                throw new InvalidDataException(
-                    $"Unexpected shared-memory magic: 0x{magic:X8} (expected 0x{MmfMagic:X8}).");
-
-            _frameSize = _mmfView.ReadInt32(8);
-            if (_frameSize <= 0)
-                throw new InvalidDataException($"Bridge reported invalid frameSize: {_frameSize}.");
-
-            // Pre-allocate audio work buffer — no further allocation during Read()
-            _audioWorkBuffer = new float[_frameSize * AudioChannels];
-
             // ── Step 4: Send load command ─────────────────────────────────────
-            var pluginPathJson = JsonSerializer.Serialize(instrument.Vst3PluginPath);
-            var presetPathJson = JsonSerializer.Serialize(instrument.Vst3PresetPath ?? string.Empty);
-            var loadCmd = $"{{\"cmd\":\"load\",\"path\":{pluginPathJson},\"preset\":{presetPathJson}}}";
-
-            await _pipeWriter.WriteLineAsync(loadCmd.AsMemory(), cancellation).ConfigureAwait(false);
+            var loadCmd = new MidiCommand
+            {
+                CommandKind = MidiCommand.Kind.Load,
+                Path = instrument.Vst3PluginPath,
+                Preset = instrument.Vst3PresetPath ?? string.Empty
+            };
+            var loadJson = SerializeCommand(loadCmd);
+            await _pipeWriter.WriteLineAsync(loadJson.AsMemory(), cancellation).ConfigureAwait(false);
             await _pipeWriter.FlushAsync(cancellation).ConfigureAwait(false);
 
             // ── Step 5: Await load ack (5 second timeout) ─────────────────────
@@ -300,16 +319,25 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
     public void NoteOn(int channel, int note, int velocity)
     {
         if (!_isReady) return;
-        _commandChannel.Writer.TryWrite(
-            $"{{\"cmd\":\"noteOn\",\"channel\":{channel},\"pitch\":{note},\"velocity\":{velocity}}}");
+        _commandChannel.Writer.TryWrite(new MidiCommand
+        {
+            CommandKind = MidiCommand.Kind.NoteOn,
+            Channel = channel,
+            Pitch = note,
+            Velocity = velocity
+        });
     }
 
     /// <inheritdoc/>
     public void NoteOff(int channel, int note)
     {
         if (!_isReady) return;
-        _commandChannel.Writer.TryWrite(
-            $"{{\"cmd\":\"noteOff\",\"channel\":{channel},\"pitch\":{note}}}");
+        _commandChannel.Writer.TryWrite(new MidiCommand
+        {
+            CommandKind = MidiCommand.Kind.NoteOff,
+            Channel = channel,
+            Pitch = note
+        });
     }
 
     /// <inheritdoc/>
@@ -320,22 +348,30 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
     public void NoteOffAll()
     {
         if (_disposed) return;
-        _commandChannel.Writer.TryWrite("{\"cmd\":\"noteOffAll\"}");
+        _commandChannel.Writer.TryWrite(new MidiCommand
+        {
+            CommandKind = MidiCommand.Kind.NoteOffAll
+        });
     }
 
     /// <inheritdoc/>
     public void SetProgram(int channel, int bank, int program)
     {
         if (!_isReady) return;
-        _commandChannel.Writer.TryWrite($"{{\"cmd\":\"setProgram\",\"program\":{program}}}");
+        _commandChannel.Writer.TryWrite(new MidiCommand
+        {
+            CommandKind = MidiCommand.Kind.SetProgram,
+            Channel = channel,
+            Program = program
+        });
     }
 
     // ── Dispose ───────────────────────────────────────────────────────────────
 
     /// <inheritdoc/>
     /// <remarks>
-    /// Sends a <c>shutdown</c> command (fire-and-forget), kills the bridge process, and releases
-    /// all IPC resources. Safe to call multiple times.
+    /// Sends a <c>shutdown</c> command, waits for graceful exit, then kills if necessary.
+    /// Safe to call multiple times.
     /// </remarks>
     public void Dispose()
     {
@@ -347,27 +383,31 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
         }
         _isReady = false;
 
-        // Fire-and-forget shutdown: queue the command, then complete the channel so the
-        // writer task drains and exits naturally before or after the kill.
-        _commandChannel.Writer.TryWrite("{\"cmd\":\"shutdown\"}");
-        _commandChannel.Writer.TryComplete();
+        // Enqueue shutdown command and complete channel
+        _commandChannel.Writer.TryWrite(new MidiCommand { CommandKind = MidiCommand.Kind.Shutdown });
+        _commandChannel.Writer.Complete();
 
-        // Cancel the writer task
-        _writerCts?.Cancel();
+        // Wait for writer task to drain the shutdown command (500ms timeout)
+        try { _pipeWriterTask?.Wait(TimeSpan.FromMilliseconds(500)); }
+        catch { }
 
-        // Kill bridge process (spec: Kill + WaitForExit(1000))
+        // Give bridge process graceful exit time (2s timeout)
         if (_bridgeProcess is { HasExited: false })
         {
-            try { _bridgeProcess.Kill(); }
-            catch { /* process may have already exited */ }
+            if (!_bridgeProcess.WaitForExit(2000))
+            {
+                try { _bridgeProcess.Kill(); }
+                catch { }
+            }
         }
-        try { _bridgeProcess?.WaitForExit(1000); }
-        catch { }
+
+        // Cancel CTS (cleanup, writer task already exited)
+        _writerCts?.Cancel();
 
         // Dispose IPC resources in order: writers first, then underlying streams and handles
         _pipeWriter?.Dispose();
         _pipeReader?.Dispose();
-        _pipeClient?.Dispose();
+        _pipeServer?.Dispose();
         _mmfView?.Dispose();
         _mmf?.Dispose();
         _bridgeProcess?.Dispose();
@@ -402,7 +442,7 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
     }
 
     /// <summary>
-    /// Background task: drains the command channel and writes JSON lines to the named pipe.
+    /// Background task: drains the command channel, serializes to JSON, and writes to the named pipe.
     /// Transitions to <c>Faulted</c> on any pipe I/O error.
     /// </summary>
     private async Task RunPipeWriterAsync(CancellationToken ct)
@@ -414,7 +454,8 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
                 if (_pipeWriter is not { } writer) break;
                 try
                 {
-                    await writer.WriteLineAsync(cmd.AsMemory(), ct).ConfigureAwait(false);
+                    var json = SerializeCommand(cmd);
+                    await writer.WriteLineAsync(json.AsMemory(), ct).ConfigureAwait(false);
                     await writer.FlushAsync(ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
@@ -429,6 +470,20 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
             }
         }
         catch (OperationCanceledException) { /* normal shutdown path */ }
+    }
+
+    private static string SerializeCommand(MidiCommand cmd)
+    {
+        return cmd.CommandKind switch
+        {
+            MidiCommand.Kind.NoteOn => $"{{\"cmd\":\"noteOn\",\"channel\":{cmd.Channel},\"pitch\":{cmd.Pitch},\"velocity\":{cmd.Velocity}}}",
+            MidiCommand.Kind.NoteOff => $"{{\"cmd\":\"noteOff\",\"channel\":{cmd.Channel},\"pitch\":{cmd.Pitch}}}",
+            MidiCommand.Kind.NoteOffAll => "{\"cmd\":\"noteOffAll\"}",
+            MidiCommand.Kind.SetProgram => $"{{\"cmd\":\"setProgram\",\"program\":{cmd.Program}}}",
+            MidiCommand.Kind.Load => $"{{\"cmd\":\"load\",\"path\":{JsonSerializer.Serialize(cmd.Path)},\"preset\":{JsonSerializer.Serialize(cmd.Preset)}}}",
+            MidiCommand.Kind.Shutdown => "{\"cmd\":\"shutdown\"}",
+            _ => throw new ArgumentOutOfRangeException()
+        };
     }
 
     private static bool ParseLoadAck(string? line, out string? errorMessage)

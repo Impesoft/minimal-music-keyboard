@@ -27,7 +27,8 @@ public sealed class InstrumentCatalog
         foreach (var inst in _instruments)
         {
             _byId[inst.Id] = inst;
-            _byProgramNumber[inst.ProgramNumber] = inst;
+            if (inst.Type == InstrumentType.SoundFont)
+                _byProgramNumber[inst.ProgramNumber] = inst;
         }
     }
 
@@ -51,7 +52,8 @@ public sealed class InstrumentCatalog
         foreach (var inst in updated)
         {
             _byId[inst.Id] = inst;
-            _byProgramNumber[inst.ProgramNumber] = inst;
+            if (inst.Type == InstrumentType.SoundFont)
+                _byProgramNumber[inst.ProgramNumber] = inst;
         }
     }
 
@@ -72,7 +74,8 @@ public sealed class InstrumentCatalog
         foreach (var inst in updated)
         {
             _byId[inst.Id] = inst;
-            _byProgramNumber[inst.ProgramNumber] = inst;
+            if (inst.Type == InstrumentType.SoundFont)
+                _byProgramNumber[inst.ProgramNumber] = inst;
         }
     }
 
@@ -93,11 +96,12 @@ public sealed class InstrumentCatalog
         foreach (var inst in updated)
         {
             _byId[inst.Id] = inst;
-            _byProgramNumber[inst.ProgramNumber] = inst;
+            if (inst.Type == InstrumentType.SoundFont)
+                _byProgramNumber[inst.ProgramNumber] = inst;
         }
     }
 
-    /// <summary>Looks up by instrument id (case-insensitive). Returns null if not found.</summary>
+    /// <summary>Looks up by instrument id(case-insensitive). Returns null if not found.</summary>
     public InstrumentDefinition? GetById(string id)
     {
         _byId.TryGetValue(id, out var result);

@@ -90,3 +90,31 @@
 - Wrong disposal order resilience
 
 **Next actions:** Ward reviews baseline report → decides if Phase 1 proceeds with manual inspection or waits for integration tests.
+
+### 2026-03-11 — Phase 1 Verification (Ward Impe task)
+
+**Objective:** Verify build compiles and all existing tests pass after Faye's Phase 1 (IInstrumentBackend refactor).
+
+**Build: ❌ FAIL**
+- `dotnet build` fails with 2 C# errors + 1 XAML cascade error.
+- Root cause: stray extra `)` in `AudioEngine.cs` line 177 inside `LoadSoundFont()`.
+- Line reads `}));` — should be `});`. Extra parenthesis after object initializer closing brace causes `CS1002` and `CS1513`.
+- Fix: change `}));` → `});` on line 177.
+
+**Tests: ⚠️ BLOCKED (same as baseline — not a regression)**
+- `dotnet test` returns "Permission denied" — identical to baseline environment limitation.
+- Test project still compiles successfully (no reference to production project).
+
+**Regressions: 1 — Build now fails (was passing at baseline).**
+
+**Architecture inspection (manual, pending build fix):**
+- `Volatile.Read(ref _synthesizer)` preserved in `SoundFontBackend.Read()` ✅
+- `Volatile.Write(ref _synthesizer!, newSynth)` preserved in `SoundFontBackend.LoadAsync()` ✅
+- Command queue drain loop in `AudioEngine.ReadSamples()` preserved ✅
+- `NoteOffAll` enqueued before instrument swap ✅
+- SoundFont cache moved to `SoundFontBackend` (cache behavior preserved) ✅
+- Phase 1 structure is sound; only the typo blocks the build.
+
+**Deliverable:** `.squad/decisions/inbox/ed-phase1-verification.md` written with full details and required fix.
+
+## Learnings

@@ -27,6 +27,21 @@
 
 <!-- append new learnings below -->
 
+### Session: Phase 1 Fix-Up — Gren's 3 REJECTED issues (2026-03-11)
+
+**Context:** Faye implemented the VST3 refactor Phase 1. Gren rejected with 3 issues. Faye locked out; Jet applied fixes.
+
+**Fix 1 — AudioEngine.cs line 177 (compilation error):**
+`}));` → `});` — one extra closing parenthesis inside `LoadSoundFont()`. Removed the stray `)`.
+
+**Fix 2 — IInstrumentBackend.cs (interface doc threading contract):**
+Added `<remarks>Called from the audio thread only. Do not call from the MIDI callback thread.</remarks>` to `NoteOn()`, `NoteOff()`, and `NoteOffAll()`. The summary lines already said "audio render thread only" but Gren required an explicit remarks block to make the contract unmissable for Phase 2 implementers.
+
+**Fix 3 — SoundFontBackend.cs (unused ConcurrentQueue field):**
+`_commandQueue` field and the `ConcurrentQueue<MidiCommand> commandQueue` constructor parameter were dead code — Faye correctly chose AudioEngine-drains-queue (option a) but didn't remove the old injection. Removed the field, the constructor parameter, and the `using System.Collections.Concurrent` directive. Updated `AudioEngine` constructor call from `new SoundFontBackend(path, _commandQueue)` to `new SoundFontBackend(path)`.
+
+**Build result:** `dotnet build --no-incremental` → **Build succeeded in ~10s, 0 errors, 0 warnings.**
+
 ### Session: Tray Icon Not Visible — ForceCreate + IconSource Fix (2026-03-01)
 
 **Symptom:** App started but no tray icon appeared — not in taskbar, not in notification area, nowhere.

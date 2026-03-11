@@ -4,6 +4,162 @@ _Append-only. Managed by Scribe. Agents write to .squad/decisions/inbox/ — Scr
 
 <!-- Entries appended below in reverse-chronological order -->
 
+## Session: 2026-03-11 — Batch 3: Phase 1 Review & Build Verification
+
+### Gren: Phase 1 Code Review
+
+# Decision: Phase 1 Code Review — REJECTED
+
+**Author:** Gren (Supporting Architect)
+**Date:** 2026-03-11
+**Scope:** Phase 1 VST3 architecture refactor (IInstrumentBackend + SoundFontBackend + AudioEngine)
+**Full review:** `docs/phase1-code-review.md`
+
+## Verdict
+
+**REJECTED** — 1 blocking compilation error + 2 required fixes.
+
+## Blocking Issues
+
+1. **AudioEngine.cs line 177: extra closing parenthesis** — `}));` should be `});`. Project does not compile.
+
+## Required Fixes (non-blocking but must be fixed before merge)
+
+2. **IInstrumentBackend.cs: Add threading contract to interface-level XML doc** — Per proposal §2.1, the threading model must be documented at the interface level for Phase 2 implementers.
+3. **SoundFontBackend.cs: Remove unused `_commandQueue` field** — AudioEngine correctly drains the queue (option (a) from Gren's v1.1 implementation note). The unused field is dead code that misrepresents the threading model.
+
+## Architecture Assessment
+
+The architectural decisions are all correct. Faye resolved the queue-drain ownership question correctly, preserved all critical patterns (Volatile swap, SF2 cache, FileStream using), and kept LoadSoundFont for backward compatibility. The issues are mechanical, not architectural.
+
+## Next Steps
+
+- **Jet** should apply the 3 fixes (Faye is locked out this cycle).
+- After fixes, submit for Gren re-review.
+- Phase 2 is blocked until Phase 1 passes re-review.
+
+---
+
+### Ed: Phase 1 Build Verification
+
+# Decision: Phase 1 Verification — Build & Test Report
+
+**Author:** Ed (Tester/QA)  
+**Date:** 2026-03-11  
+**Requested by:** Ward Impe  
+**Phase:** Phase 1 (VST3 / IInstrumentBackend refactor — Faye's implementation)
+
+## Build Result: ❌ FAIL
+
+**Command:** `dotnet build MinimalMusicKeyboard.sln --no-incremental`
+
+**Errors (2):**
+
+| File | Line | Error |
+|------|------|-------|
+| `src\MinimalMusicKeyboard\Services\AudioEngine.cs` | 177 | `CS1002: ; expected` |
+| `src\MinimalMusicKeyboard\Services\AudioEngine.cs` | 177 | `CS1513: } expected` |
+
+**Root cause:** Stray extra closing parenthesis in `LoadSoundFont()` method.
+
+```csharp
+// Line 177 — BROKEN (as submitted by Faye)
+        }));   // ← extra ) — should be });
+
+// Correct form:
+        });
+```
+
+The `_sfBackend.LoadAsync(new InstrumentDefinition { ... })` call has one extra `)` after the object initializer's closing brace. The compiler cannot parse the statement, causing both errors. A third error (`MSB3073`) is a cascade failure from XAML compiler exiting non-zero due to the C# compilation failure.
+
+**Test project:** ✅ Compiled successfully (does not reference production project — same as baseline).
+
+## Test Result: ⚠️ BLOCKED (same as baseline — NOT a regression)
+
+**Command:** `dotnet test MinimalMusicKeyboard.sln`
+
+**Result:** `Permission denied and could not request permission from user`
+
+This is the **same environment permission issue** documented in the baseline (2026-03-11). It is **not** caused by Phase 1 changes. The test DLL itself built cleanly.
+
+**Expected tests (per baseline):** 37 tests across 4 files — all using stubs, no reference to production code.
+
+## Regression vs Baseline
+
+| Area | Baseline | Phase 1 | Status |
+|------|----------|---------|--------|
+| Build (production) | ✅ Pass | ❌ **FAIL** | 🔴 **REGRESSION** |
+| Build (test project) | ✅ Pass | ✅ Pass | ✅ No change |
+| Test execution | ❌ Blocked (permissions) | ❌ Blocked (permissions) | ✅ No change |
+| Test compilation | ✅ Pass | ✅ Pass | ✅ No change |
+
+**Regressions: 1 — Build now fails due to syntax error in AudioEngine.cs line 177.**
+
+## Required Action (Blocking)
+
+**Faye must fix `AudioEngine.cs` line 177:** Change `}));` → `});`
+
+```csharp
+// LoadSoundFont method, line 169-177 — fix the closing:
+         _ = _sfBackend.LoadAsync(new InstrumentDefinition
+         {
+             Id            = "__loadSoundFont__",
+             DisplayName   = path,
+             SoundFontPath = path,
+             BankNumber    = 0,
+             ProgramNumber = 0,
+             Type          = InstrumentType.SoundFont,
+         });   // ← was })); — extra ) removed
+```
+
+**Phase 1 is NOT mergeable in current state.** Fix the syntax error, then re-run build verification.
+
+## Notes on Phase 1 Architecture (Informational)
+
+On inspection, the rest of the Phase 1 changes look structurally sound:
+
+- ✅ `SoundFontBackend` correctly extracts audio rendering and SF2 loading from `AudioEngine`
+- ✅ `Volatile.Read(ref _synthesizer)` preserved in `SoundFontBackend.Read()` (critical pattern from baseline checklist)
+- ✅ `Volatile.Write(ref _synthesizer!, newSynth)` preserved in `SoundFontBackend.LoadAsync()`
+- ✅ Command queue drain loop in `AudioEngine.ReadSamples()` preserved (lines 204-233)
+- ✅ `NoteOffAll` enqueued before instrument swap in `AudioEngine.SelectInstrument()` (line 159)
+- ✅ SoundFont cache moved into `SoundFontBackend` (`_soundFontCache` + `_soundFontCacheLock`)
+- ✅ `IInstrumentBackend` abstraction in place (`_activeBackend` field, `Volatile.Read/Write` on it)
+
+**These cannot be verified at runtime until the syntax error is fixed and the build passes.**
+
+---
+
+### Faye: Phase 1 Implementation Complete
+
+# Decision: Phase 1 Implementation Complete — Audio Backend Refactor
+
+**Author:** Faye (Audio Dev)  
+**Date:** 2026-03-18  
+**Requested by:** Ward Impe  
+**Status:** Ready for review
+
+## Summary
+- Implemented `IInstrumentBackend` and extracted MeltySynth logic into `SoundFontBackend`, preserving Volatile swap + GC.Collect patterns.
+- Refactored `AudioEngine` into a mixer host with audio-thread queue drain dispatching to the backend.
+- Extended `InstrumentDefinition` with `InstrumentType` + VST3 fields, keeping JSON backward compatibility.
+
+## Files Changed
+- `src/MinimalMusicKeyboard/Interfaces/IInstrumentBackend.cs` (new)
+- `src/MinimalMusicKeyboard/Services/SoundFontBackend.cs` (new)
+- `src/MinimalMusicKeyboard/Services/AudioEngine.cs` (refactor to mixer host)
+- `src/MinimalMusicKeyboard/Models/InstrumentDefinition.cs` (InstrumentType + VST3 fields, SoundFontPath optional)
+- `.squad/agents/faye/history.md` (learnings appended)
+
+## Tests
+- `dotnet build Q:\source\minimal-music-keyboard\MinimalMusicKeyboard.sln` (blocked: permission denied)
+- `dotnet test Q:\source\minimal-music-keyboard\MinimalMusicKeyboard.sln` (blocked: permission denied)
+
+## Deviations
+- None.
+
+---
+
 ## Session: 2026-03-11 — Batch 2: VST3 Proposal Revision + Test Baseline
 
 ### Gren: VST3 Architecture Proposal v1.1 Review

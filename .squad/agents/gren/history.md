@@ -82,3 +82,39 @@
 7. **Spike's §7.2 question answered** — Spin-wait with ≤2ms timeout is acceptable on the audio thread. Preferred over kernel semaphore (avoids priority inversion). Timeout must output silence, not stale data.
 
 **Lesson learned:** When reviewing architecture proposals that refactor existing code, always verify that the proposal includes code sketches for ALL new components — not just the ones that change shape. The `SoundFontBackend` extraction is "just a move" but moves are where patterns get accidentally dropped.
+
+### 2026-03-11 — VST3 Architecture Proposal Re-Review (v1.1)
+
+**Reviewed:** `docs/vst3-architecture-proposal.md` v1.1 (Spike)  
+**Verdict:** APPROVED  
+**Full review:** `docs/vst3-architecture-review-v1.1.md`
+
+**Key findings:**
+
+1. **All 6 issues from v1.0 review resolved** — Spike addressed both BLOCKING issues (threading model contradiction, missing Dispose() specs) and all 4 REQUIRED issues (mixer swap semantics, bridge crash state machine, SoundFontBackend sketch, IPC resource ownership). Every fix matched or exceeded the original recommendation.
+
+2. **Pattern verification against live code is essential** — Compared the SoundFontBackend sketch line-by-line against `AudioEngine.cs`. All critical patterns (Volatile.Read/Write, ConcurrentQueue drain, SoundFont cache with double-checked locking, FileStream `using`) survived the extraction. The LoadAsync() improvement (explicit NoteOffAll before swap) is a net positive.
+
+3. **Queue-drain ownership ambiguity flagged but non-blocking** — The SoundFontBackend sketch drains the ConcurrentQueue unconditionally in Read(), but the invariant says only the active backend should drain. Both backends are in the mixer, so both Read() methods are called. Flagged as implementation note for Faye — recommend AudioEngine drains and dispatches (preserving current pattern) rather than backends self-draining.
+
+4. **IPC naming scheme detail matters** — Using host PID (not bridge PID) in `mmk-vst3-audio-{hostPid}` means the shared memory name is stable across bridge restarts. The host doesn't need to recreate MemoryMappedFile on crash recovery. Small detail, big operational benefit.
+
+**Lesson learned:** When a proposal revision addresses all blocking issues cleanly, look for second-order issues that emerge from the fixes. The queue-drain ambiguity wasn't visible in v1.0 because the threading model was contradictory — once the model was clarified, the "who drains the queue" question became visible. Approval doesn't mean perfection — flag implementation notes for the coding team.
+
+### 2026-03-11 — Phase 1 Code Review (REJECTED)
+
+**Reviewed:** Phase 1 implementation (Faye) — IInstrumentBackend, SoundFontBackend, AudioEngine refactor, InstrumentDefinition changes
+**Verdict:** REJECTED — 1 blocking + 2 required fixes
+**Full review:** `docs/phase1-code-review.md`
+
+**Key findings:**
+
+1. **BLOCKING: Compilation error in AudioEngine.cs line 177** — Extra closing parenthesis in `LoadSoundFont()` method: `}));` instead of `});`. Single-character fix but prevents the entire project from building. Always build-verify before submitting for review.
+
+2. **REQUIRED: Interface-level threading contract missing from IInstrumentBackend** — Per-method docs correctly say "audio render thread only" but the interface summary omits the full ConcurrentQueue pattern that proposal §2.1 specifies. Phase 2 implementers need this front and center.
+
+3. **REQUIRED: Unused ConcurrentQueue field in SoundFontBackend** — Faye correctly chose option (a) from my v1.1 implementation note (AudioEngine drains queue and dispatches), but left the queue injection from the proposal sketch. Dead fields that imply the wrong threading model are worse than no field at all.
+
+4. **Architecture is sound** — Every significant design decision was correct: queue-drain ownership, Volatile swap preservation, SF2 cache pattern, LoadSoundFont retention for backward compat, volume in ReadSamples wrapper. The issues are mechanical, not architectural.
+
+**Lesson learned:** When reviewing a refactor that extracts code from class A to class B, verify that artifacts from abandoned design alternatives (like a constructor parameter for a pattern that was ultimately rejected) don't survive into the implementation. Code sketches in proposals are starting points — the implementation may correctly deviate, but must clean up remnants of the sketch's approach. Also: always build the code before reviewing. A compilation error should have been caught before review was requested.

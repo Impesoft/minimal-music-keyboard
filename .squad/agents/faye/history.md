@@ -27,6 +27,11 @@
 
 <!-- append new learnings below -->
 
+### Phase 1 — Backend Extraction (2026-03-18)
+- AudioEngine now hosts a MixingSampleProvider and drains the MidiCommand queue on the audio thread, dispatching to IInstrumentBackend (SoundFontBackend) while preserving the Volatile swap pattern in the backend.
+- Bank select commands are tracked on the audio thread via pending MSB/LSB arrays and applied when ProgramChange is dispatched to the backend.
+- Build/test attempts (`dotnet build`/`dotnet test` on the solution) were blocked by environment permissions.
+
 ### Sprint 1 — Audio Engine Implementation (2026-03-01)
 
 **Files created:**

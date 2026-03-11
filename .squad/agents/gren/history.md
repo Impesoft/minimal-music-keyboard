@@ -57,3 +57,28 @@
 5. **Lesson: Verify architecture against code after initial implementation** — Architecture docs can drift from reality during rapid development. Periodic verification catches naming changes, structural evolution, and implementation improvements that strengthen the design. This verification found the ConcurrentQueue pattern (an improvement over the draft) and corrected naming mismatches before they caused confusion.
 
 6. **SettingsWindow pattern discrepancy** — Architecture doc says "tracked, disposed on close" but actual code says "create once, reuse forever (show/hide)". This is acceptable for a rarely-opened window, but event handler leaks remain a risk. Flagged for future audit, not blocking.
+
+### 2026-07-17 — VST3 Architecture Proposal Review
+
+**Reviewed:** `docs/vst3-architecture-proposal.md` v1.0 (Spike)  
+**Research reviewed:** `docs/vst3-dotnet-options.md` (Faye)  
+**Verdict:** APPROVED WITH CONDITIONS  
+**Full review:** `docs/vst3-architecture-review.md`
+
+**Key findings:**
+
+1. **BLOCKING: Threading model contradiction in §4.2 vs §4.3** — The code sketch calls `backend.NoteOn()` directly from the MIDI thread, bypassing the ConcurrentQueue pattern that Faye's Decision 1 established. The threading model diagram says commands go through the queue. These can't both be right. MeltySynth's thread safety is unverified — the queue is the safety mechanism. Spike must correct the sketch to show the queue drain pattern preserved.
+
+2. **BLOCKING: No Dispose() specification for refactored AudioEngine or Vst3BridgeBackend** — The proposal refactors the two most resource-sensitive components without defining their teardown sequences. The current AudioEngine.Dispose() order (silence → stop WASAPI → null synth → clear cache) is critical; the new version must have an equivalent specification. Vst3BridgeBackend.Dispose() must define: SHUTDOWN message → wait with timeout → kill fallback → close pipe → release shared memory.
+
+3. **REQUIRED: MixingSampleProvider swap semantics** — The proposal doesn't clarify whether backends are always in the mixer (producing silence when inactive) or dynamically added/removed. Recommended: always-in-mixer approach eliminates thread-safety concerns with NAudio's `AddMixerInput()`/`RemoveMixerInput()` during concurrent `Read()`.
+
+4. **REQUIRED: Bridge crash mid-render behavior undefined** — What does `Vst3BridgeBackend.Read()` do when the bridge process is dead? Need a state machine: Running → Faulted (output silence) → Disposed. Exceptions from broken pipe must not propagate to the WASAPI audio thread.
+
+5. **REQUIRED: SoundFontBackend needs a code sketch** — The Volatile.Read/Write swap, SF2 cache with double-checked locking, and FileStream `using` pattern were hard-won in v1.0 review. A bullet list saying "these move" is insufficient — need a sketch proving the patterns survive the extraction.
+
+6. **REQUIRED: IPC resource ownership unspecified** — Who creates the MemoryMappedFile and named pipe? Recommended: host creates both, bridge connects as client. Simplifies crash cleanup.
+
+7. **Spike's §7.2 question answered** — Spin-wait with ≤2ms timeout is acceptable on the audio thread. Preferred over kernel semaphore (avoids priority inversion). Timeout must output silence, not stale data.
+
+**Lesson learned:** When reviewing architecture proposals that refactor existing code, always verify that the proposal includes code sketches for ALL new components — not just the ones that change shape. The `SoundFontBackend` extraction is "just a move" but moves are where patterns get accidentally dropped.

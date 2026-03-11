@@ -1,9 +1,9 @@
 # VST3 Instrument Support — Architecture Proposal
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Author:** Spike (Lead Architect)  
-**Date:** 2026-07-17  
-**Status:** PROPOSAL — Pending Gren's review  
+**Date:** 2026-07-17 (revised 2026-07-18)  
+**Status:** REVISED — Pending Gren re-review v1.1  
 **Requested by:** Ward Impe  
 
 ---
@@ -104,8 +104,10 @@ namespace MinimalMusicKeyboard.Interfaces;
 /// Each backend produces audio as an ISampleProvider that the AudioEngine mixer consumes.
 ///
 /// Threading contract:
-///   - NoteOn/NoteOff/SetProgram are called from the MIDI callback thread (via command queue).
-///     Implementations must be thread-safe or use internal queuing.
+///   - NoteOn/NoteOff/SetProgram are called from the AUDIO RENDER THREAD ONLY.
+///     AudioEngine drains its ConcurrentQueue&lt;MidiCommand&gt; during ReadSamples()
+///     and dispatches to the active backend on the audio thread. The MIDI callback
+///     thread never calls backend methods directly.
 ///   - The ISampleProvider.Read() returned by GetSampleProvider() is called on the WASAPI
 ///     audio render thread. This is the audio hot path — no blocking, no allocation.
 ///   - LoadAsync is called from a background Task. It may take seconds (loading SF2 or
@@ -138,10 +140,10 @@ public interface IInstrumentBackend : IDisposable
     /// </summary>
     ISampleProvider GetSampleProvider();
 
-    /// <summary>MIDI note-on. Enqueued by AudioEngine; processed on the audio thread.</summary>
+    /// <summary>MIDI note-on. Called from the audio render thread only.</summary>
     void NoteOn(int channel, int note, int velocity);
 
-    /// <summary>MIDI note-off. Enqueued by AudioEngine; processed on the audio thread.</summary>
+    /// <summary>MIDI note-off. Called from the audio render thread only.</summary>
     void NoteOff(int channel, int note);
 
     /// <summary>Silence all voices immediately.</summary>

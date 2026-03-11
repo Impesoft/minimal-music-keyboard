@@ -30,6 +30,7 @@ public sealed class AudioEngine : IAudioEngine
 
     private readonly MixingSampleProvider _mixer;
     private readonly SoundFontBackend _sfBackend;
+    private readonly Vst3BridgeBackend _vst3Backend;
     private IInstrumentBackend? _activeBackend;
 
     // ── MIDI command queue (MIDI thread → audio thread, lock-free) ────────────
@@ -47,11 +48,13 @@ public sealed class AudioEngine : IAudioEngine
     public AudioEngine(string? outputDeviceId = null)
     {
         _sfBackend = new SoundFontBackend(PlaceholderSoundFontPath);
+        _vst3Backend = new Vst3BridgeBackend();
         _mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels))
         {
             ReadFully = true
         };
         _mixer.AddMixerInput(_sfBackend.GetSampleProvider());
+        _mixer.AddMixerInput(_vst3Backend.GetSampleProvider());
 
         Volatile.Write(ref _activeBackend, _sfBackend);
 
@@ -133,12 +136,22 @@ public sealed class AudioEngine : IAudioEngine
     /// <inheritdoc/>
     public void SelectInstrument(InstrumentDefinition instrument)
     {
-        if (instrument.Type != InstrumentType.SoundFont)
+        if (instrument.Type == InstrumentType.SoundFont)
+        {
+            HandleSoundFontInstrument(instrument);
+        }
+        else if (instrument.Type == InstrumentType.Vst3)
+        {
+            HandleVst3Instrument(instrument);
+        }
+        else
         {
             Debug.WriteLine($"[AudioEngine] Unsupported instrument type '{instrument.Type}'.");
-            return;
         }
+    }
 
+    private void HandleSoundFontInstrument(InstrumentDefinition instrument)
+    {
         if (string.IsNullOrWhiteSpace(instrument.SoundFontPath) || instrument.SoundFontPath == PlaceholderSoundFontPath)
         {
             // No SF2 to load — just queue a program change; notes will play if any synth is loaded
@@ -159,6 +172,20 @@ public sealed class AudioEngine : IAudioEngine
         _commandQueue.Enqueue(new MidiCommand(MidiCommandType.NoteOffAll, 0, 0, 0));
         Volatile.Write(ref _activeBackend, _sfBackend);
         _ = _sfBackend.LoadAsync(instrument);
+    }
+
+    private void HandleVst3Instrument(InstrumentDefinition instrument)
+    {
+        if (string.IsNullOrWhiteSpace(instrument.Vst3PluginPath))
+        {
+            Debug.WriteLine($"[AudioEngine] VST3 instrument '{instrument.DisplayName}' has no plugin path configured.");
+            return;
+        }
+
+        // Silence current notes and switch to VST3 backend
+        _commandQueue.Enqueue(new MidiCommand(MidiCommandType.NoteOffAll, 0, 0, 0));
+        Volatile.Write(ref _activeBackend, _vst3Backend);
+        _ = _vst3Backend.LoadAsync(instrument);
     }
 
     /// <inheritdoc/>
@@ -279,6 +306,7 @@ public sealed class AudioEngine : IAudioEngine
         }
 
         _sfBackend.Dispose();
+        _vst3Backend.Dispose();
         (_mixer as IDisposable)?.Dispose();
     }
 

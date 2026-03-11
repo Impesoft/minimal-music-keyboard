@@ -27,6 +27,60 @@
 
 <!-- append new learnings below -->
 
+### Session: Phase 4 — VST3 Settings UI (2026-03-11, Latest)
+
+**Context:** Extended the Settings UI to support VST3 instrument configuration for the 8 button mapping slots. Users can now select either SF2 or VST3 instruments per slot.
+
+**Implementation:**
+
+**Settings UI Extensions:**
+- Redesigned `PopulateButtonMappings()` to include an instrument type selector (SF2 / VST3) per slot
+- Added two panels per slot:
+  - SF2 panel: Existing catalog combo + SF2 path + browse (shown when SF2 selected)
+  - VST3 panel: Plugin path + browse, preset path + browse (shown when VST3 selected)
+- Panels dynamically show/hide based on type selector (RadioButtons control)
+- Added three file picker methods:
+  - `PickSf2FileAsync()` (existing)
+  - `PickVst3PluginFileAsync()` — filters `.vst3` files
+  - `PickVst3PresetFileAsync()` — filters `.vstpreset` files
+- All pickers use `InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this))` pattern for WinUI3 handle initialization
+
+**Data Model:**
+- Extended `MappingRowState` record with:
+  - `RadioButtons TypeSelector` — SF2 vs VST3 toggle
+  - `StackPanel Sf2Panel`, `StackPanel Vst3Panel` — separate control containers
+  - `TextBlock Vst3PluginLabel`, `TextBlock Vst3PresetLabel` — VST3 path displays
+  - `InstrumentDefinition? SlotInstrument` — tracks full definition (not just ID)
+- Each VST3 slot creates a unique `InstrumentDefinition`:
+  - `Id = "vst3-slot-{slotIndex}"`
+  - `DisplayName = "VST3 Slot {slotIndex + 1}"`
+  - `Type = InstrumentType.Vst3`
+  - `Vst3PluginPath`, `Vst3PresetPath` — user-selected paths
+
+**Backend Integration:**
+- **AudioEngine.cs:** Added `Vst3BridgeBackend _vst3Backend` field
+  - Registered VST3 backend's sample provider with mixer
+  - Split `SelectInstrument()` into `HandleSoundFontInstrument()` and `HandleVst3Instrument()`
+  - VST3 instruments trigger backend switch + `LoadAsync()` call
+  - Added `_vst3Backend.Dispose()` to cleanup
+- **InstrumentCatalog.cs:** Added `AddOrUpdateVst3Instrument()` method
+  - VST3 slot instruments persisted to `instruments.json`
+  - Retrieved via `GetById()` like SF2 instruments
+
+**Build result:** `dotnet build --no-incremental` → **Build succeeded in ~8.7s, 0 errors, 2 warnings** (CS0414 about unused `_frameSize` field in Vst3BridgeBackend — harmless, retained for consistency).
+
+**Key learnings:**
+1. **Slot-based VST3 Instruments:** Each VST3 slot gets a unique `InstrumentDefinition` stored in the catalog. This keeps the architecture consistent — all instruments come from the catalog, whether SF2 or VST3.
+2. **WinUI3 FileOpenPicker Requires Window Handle:** Unpackaged WinUI3 apps must call `InitializeWithWindow.Initialize()` with `WindowNative.GetWindowHandle(this)` before showing pickers, or they fail silently.
+3. **No Breaking Changes:** SF2 instrument selection continues to work exactly as before. SF2 is the default type (index 0), and all existing workflows are untouched.
+4. **Backend Switching:** Audio engine swaps active backend via `Volatile.Write(ref _activeBackend, _vst3Backend)`. Audio thread reads from the active backend's sample provider on the next render callback.
+5. **VST3 Bridge Not Implemented Yet:** Phase 3 (native C++ bridge) is now scaffolded (Faye's Phase 3 delivery), so `Vst3BridgeBackend.IsReady` will be false until bridge SDK integration is complete. UI allows configuration and paths persist to `instruments.json`.
+
+**Known Limitations:**
+- **VST3 Bridge Status Indicator:** Task spec mentioned showing "⚠️ VST3 bridge not ready" if `IsReady=false`. Not implemented yet — can be added in a future phase by subscribing to `Vst3BridgeBackend.BridgeFaulted` event.
+- **No MVVM Toolkit:** Project uses code-behind pattern with direct event handlers. No `[RelayCommand]` or `[ObservableProperty]` attributes.
+
+
 ### Session: Phase 2 Fix-Up — Gren's 3 REJECTED issues (2026-03-11, Latest)
 
 **Context:** Faye implemented Vst3BridgeBackend (Phase 2). Gren rejected with 3 issues (1 blocking, 2 required). Faye locked out; Jet applied fixes.

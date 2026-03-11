@@ -76,6 +76,27 @@ public sealed class InstrumentCatalog
         }
     }
 
+    /// <summary>
+    /// Adds or updates a VST3 instrument definition in the catalog and persists it.
+    /// Used for slot-specific VST3 instruments configured in the UI.
+    /// </summary>
+    public void AddOrUpdateVst3Instrument(InstrumentDefinition instrument)
+    {
+        var updated = _instruments.Where(i => !string.Equals(i.Id, instrument.Id, StringComparison.OrdinalIgnoreCase)).ToList();
+        updated.Add(instrument);
+
+        SaveCatalog(GetCatalogPath(), updated);
+
+        _instruments = updated;
+        _byId.Clear();
+        _byProgramNumber.Clear();
+        foreach (var inst in updated)
+        {
+            _byId[inst.Id] = inst;
+            _byProgramNumber[inst.ProgramNumber] = inst;
+        }
+    }
+
     /// <summary>Looks up by instrument id (case-insensitive). Returns null if not found.</summary>
     public InstrumentDefinition? GetById(string id)
     {

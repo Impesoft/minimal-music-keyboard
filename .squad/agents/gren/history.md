@@ -168,3 +168,51 @@
 4. **Architecture is sound** — The state machine (5 states with lock-based transitions), silence-fill paths (3 guards in Read()), NoteOffAll resilience during teardown, Channel configuration (SingleReader, no synchronous continuations), and bridge-absent graceful handling are all well-designed. The issues are about spec compliance and audio-thread discipline, not structural.
 
 **Lesson learned:** When an architecture spec makes an explicit "who owns what" decision (like IPC resource ownership), verify the implementation matches that decision character-for-character. Ownership model reversals are subtle — the code "works" either way in isolation, but the assumptions propagate to the other side of the IPC boundary (the Phase 3 bridge). By the time the mismatch is discovered across a process boundary, it's much harder to fix. Always check resource creation vs. resource connection directionality.
+
+### 2026-03-11 — Phase 4 Code Review (REJECTED)
+
+**Reviewed:** Phase 4 implementation (Jet) — Settings UI for VST3 instrument configuration
+**Verdict:** REJECTED — 2 required fixes, assigned to Ed
+**Full review:** `docs/phase4-code-review.md`
+
+**Key findings:**
+
+1. **REQUIRED: `InstrumentDefinition` properties use `set` instead of `init`** — `Type`, `SoundFontPath`, `Vst3PluginPath`, `Vst3PresetPath` were given `set` accessors. The record is documented as immutable and its references cross thread boundaries via `Volatile.Read`/`Volatile.Write`. All call sites use `with` expressions which work with `init`. The `set` accessor is unnecessarily permissive and removes the compile-time guard against accidental mutation of shared instances. Fix: change to `init`.
+
+2. **REQUIRED: VST3 slot ProgramNumber collides with SF2 instruments** — New VST3 instruments use `ProgramNumber = slotIdx` (0–7), colliding with SF2 defaults in `_byProgramNumber` (last-writer-wins dictionary). `MidiInstrumentSwitcher.OnProgramChangeReceived()` uses `GetByProgramNumber()` — configuring any VST3 slot makes the corresponding SF2 instrument unreachable via MIDI program change. Fix: guard `_byProgramNumber` inserts with `inst.Type == InstrumentType.SoundFont` in all three catalog rebuild loops.
+
+3. **UI implementation is solid** — Type toggle with RadioButtons, panel visibility switching, FileOpenPicker initialization (WinRT.Interop), AudioEngine backend routing (Volatile.Write + LoadAsync), disposal chain, and both-backends-in-mixer pattern are all correct.
+
+4. **Bridge-ready status indicator deferred** — Not implemented; reasonable since Phase 3 bridge doesn't exist yet. Tracked as future work.
+
+**Lesson learned:** When a polymorphic type (SF2 + VST3) shares a lookup key that was designed for one variant (ProgramNumber for SF2), adding the second variant can silently corrupt the lookup for the first. Dictionary-backed indexes are especially dangerous here because they fail silently (overwrite, no exception). Always check whether shared data structures assume homogeneous types when adding a new discriminated variant. The fix is simple — filter by type when populating variant-specific indexes — but the bug is invisible without tracing the data flow from UI → catalog → MIDI switcher.
+
+### 2026-03-11 — Phase 3 Code Review (APPROVED)
+
+**Reviewed:** Phase 3 implementation (Faye) — mmk-vst3-bridge C++ scaffold (12 files)
+**Verdict:** APPROVED — 0 blocking, 0 required, 6 non-blocking notes
+**Full review:** `docs/phase3-code-review.md`
+
+**Key findings:**
+1. **IPC direction correct** — Bridge uses `CreateFileW` (client) to connect to host's named pipe; uses `OpenFileMappingW` to open host-created MMF. Host PID in all resource names. Matches spec §3.2 and approved Phase 2.
+2. **MMF header byte-compatible** — Magic `0x4D4D4B56`, version=1, frameSize, writePos at offsets 0/4/8/12, stereo float32 audio at offset 16. `InterlockedExchange` for atomic writePos update.
+3. **JSON protocol complete** — All 6 commands handled. Load ack format matches `ParseLoadAck` on the managed side.
+4. **Threading model clean** — Main thread runs JSON command loop, dedicated render thread fills MMF. Lock-free SPSC ring buffer with correct acquire/release memory ordering.
+5. **RAII consistent** — All three resource classes have destructors that release handles.
+6. **CMake/vcpkg correct** — cmake_minimum_required(3.20), C++20, nlohmann-json via vcpkg, VST3 SDK documented as TODO.
+
+**Non-blocking notes (6):** Shutdown guard short-circuit, Global MMF namespace probe unnecessary, char-by-char ReadLine acceptable, silent JSON parse failure, PING/PONG deferred, no MMF size validation.
+
+**Lesson learned:** When reviewing a cross-process IPC scaffold, the single most important check is verifying that both sides agree on: (a) who creates vs. who connects to each resource, (b) the exact byte layout of shared memory, and (c) the wire format of every message including ack fields. If any of these diverge, the bug is invisible in isolation and only manifests when both processes run together. Phase 3 passes all three checks against the approved Phase 2 implementation.
+
+### 2026-03-11 — Phase 4 Re-Review (APPROVED)
+
+**Reviewed:** Ed's fixes to Phase 4 (Settings UI for VST3) — originally authored by Jet
+**Original verdict:** REJECTED (2 required issues)
+**Re-review verdict:** APPROVED
+
+**Issue 1 (init immutability):** Resolved. All 9 properties on `InstrumentDefinition` now use `{ get; init; }`. Zero `set` accessors remain. Object initializer and `with` expression call sites are compatible.
+
+**Issue 2 (program number collision):** Resolved. All four `_byProgramNumber` rebuild loops guard with `inst.Type == InstrumentType.SoundFont`. VST3 instruments excluded from program-number index. Ed chose option (b) — type-filtered insert — which is the architecturally cleaner approach.
+
+**Full conformance check passed:** No additional blocking or required issues. AudioEngine threading discipline (Volatile.Read/Write), disposal chain, both-backends-in-mixer pattern, and UI elements (type toggle, file pickers, panel switching) all correct.

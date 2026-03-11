@@ -131,3 +131,20 @@ The architecture is sound. Faye made the right call on every significant design 
 **Who should fix:** Per lockout rules, Faye is locked out of this artifact for this cycle. **Recommend Jet** — the fixes are mechanical (syntax error, doc comments, remove unused field) and don't require deep audio domain knowledge. Jet should be able to apply all three fixes and submit for re-review within one cycle.
 
 **After fixes:** Re-review is expected to be a quick APPROVED. Phase 2 may NOT begin until Phase 1 passes.
+
+---
+
+## Re-Review After Jet's Fixes (2026-03-11)
+**Reviewer:** Gren
+
+### Fix Verification
+- Fix 1 (stray paren): ✅ — Line 177 in `AudioEngine.cs` now reads `});` (closing the `LoadAsync()` call correctly). The `LoadSoundFont` method closes cleanly at line 178. Build produces 0 errors, 0 warnings.
+- Fix 2 (threading docs): ✅ — `NoteOn`, `NoteOff`, and `NoteOffAll` in `IInstrumentBackend.cs` all have `<remarks>Called from the audio thread only. Do not call from the MIDI callback thread.</remarks>` XML doc tags (lines 34, 38, 42).
+- Fix 3 (unused field): ✅ — `_commandQueue` field is gone from `SoundFontBackend.cs`. Constructor (line 27) takes only `string soundFontPath`. `using System.Collections.Concurrent` directive is absent. `AudioEngine.cs` line 49 constructs `new SoundFontBackend(PlaceholderSoundFontPath)` — no queue argument.
+
+### New Issues Introduced
+None. Jet's changes are clean and precisely scoped to the three issues raised in the original review. No new imports, no behavioral changes, no structural drift.
+
+### Final Verdict: APPROVED
+
+Phase 1 is complete. Phase 2 may begin. Faye is cleared for Vst3BridgeBackend implementation.

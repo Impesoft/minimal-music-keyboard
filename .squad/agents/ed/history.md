@@ -117,4 +117,23 @@
 
 **Deliverable:** `.squad/decisions/inbox/ed-phase1-verification.md` written with full details and required fix.
 
+### 2026-03-11 — Phase 4 Fixes (Ward Impe task — Jet locked out)
+
+**Objective:** Apply two required fixes from Gren's Phase 4 rejection before re-review.
+
+**Fix 1 — `InstrumentDefinition` immutability restored:**
+- Changed `Type`, `SoundFontPath`, `Vst3PluginPath`, `Vst3PresetPath` from `{ get; set; }` to `{ get; init; }` in `Models/InstrumentDefinition.cs`.
+- All other properties were already `init` — now fully consistent.
+- No call sites broken; all use `with` expressions (compatible with `init`).
+- Prevents data race: `InstrumentDefinition` crosses the audio thread boundary via `Volatile.Read`/`Volatile.Write`; mutable setters on a live instance are unsafe.
+
+**Fix 2 — VST3 program number collision resolved:**
+- Added `if (inst.Type == InstrumentType.SoundFont)` guard before every `_byProgramNumber` insert in `Services/InstrumentCatalog.cs` (4 rebuild loops: constructor, `UpdateAllSoundFontPaths`, `UpdateInstrumentSoundFont`, `AddOrUpdateVst3Instrument`).
+- VST3 instruments (slot indices 0–7) were overwriting GM/SF2 entries in `_byProgramNumber`, making those SF2 instruments unreachable via MIDI program change.
+- VST3 instruments are triggered by button mappings only, not MIDI PC messages — correct to exclude them from `_byProgramNumber`. Still reachable via `GetById("vst3-slot-{N}")`.
+
+**Build: ✅ 0 errors, 2 pre-existing warnings** (CS0414: `_frameSize` in Vst3BridgeBackend — Phase 3 placeholder).
+
+**Deliverable:** `.squad/decisions/inbox/ed-phase4-fixes.md`
+
 ## Learnings

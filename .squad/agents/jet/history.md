@@ -42,6 +42,13 @@ Added `<remarks>Called from the audio thread only. Do not call from the MIDI cal
 
 **Build result:** `dotnet build --no-incremental` → **Build succeeded in ~10s, 0 errors, 0 warnings.**
 
+**Scribe actions:**
+- Created orchestration log: `.squad/orchestration-log/2026-03-11T20-49-41Z-jet-phase1-fixes.md`
+- Created session log: `.squad/log/2026-03-11T20-49-41Z-phase1-fixes-batch.md`
+- Merged Jet Phase 1 fixes into `.squad/decisions.md`
+- Staged and committed 6 files (3 source, 3 .squad/) with Copilot co-author trailer
+- Commit hash: 4519325
+
 ### Session: Tray Icon Not Visible — ForceCreate + IconSource Fix (2026-03-01)
 
 **Symptom:** App started but no tray icon appeared — not in taskbar, not in notification area, nowhere.

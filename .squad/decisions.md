@@ -4,6 +4,133 @@ _Append-only. Managed by Scribe. Agents write to .squad/decisions/inbox/ — Scr
 
 <!-- Entries appended below in reverse-chronological order -->
 
+## Session: 2026-03-11 — Batch 4: Phase 2 Completion & Phase 1 Fix Verification
+
+### Faye: Phase 2 VST3BridgeBackend Complete
+
+# Decision: Phase 2 Complete — Vst3BridgeBackend
+
+**Author:** Faye (Backend Dev)
+**Date:** 2026-07-18
+**Phase:** 2 — Managed-side VST3 bridge backend
+
+## What Was Built
+
+### Files Created
+
+**`src/MinimalMusicKeyboard/Services/BridgeFaultedEventArgs.cs`**
+- `sealed class BridgeFaultedEventArgs : EventArgs` with `Reason` (string) and `Exception?` properties.
+- Constructor matches spec exactly.
+
+**`src/MinimalMusicKeyboard/Services/Vst3BridgeBackend.cs`**
+- `sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider`
+- Full state machine: `NotStarted → Starting → Running → Faulted → Disposed`
+- `BridgeFaulted` event: `event EventHandler<BridgeFaultedEventArgs>?`
+- `IsReady` backed by `volatile bool`
+- `System.Threading.Channels.Channel<string>` for lock-free audio-thread command queuing
+- Pre-allocated `float[] _audioWorkBuffer` (sized to `frameSize * 2` in `LoadAsync`) — no audio-thread allocations
+- `MemoryMappedViewAccessor.ReadArray<float>` for ring buffer read in `Read()`
+- MMF header validation (magic `0x4D4D4B56`, frameSize sanity check)
+- Thread-safe state transitions via `_stateLock` object
+- `ObjectDisposedException` guard in `LoadAsync` via `volatile bool _disposed`
+- XML doc comments on all public members
+
+## Deviations from Spec
+
+### 1. Pipe connection: CTS-based 5s timeout instead of `ConnectAsync(int, CancellationToken)`
+The spec shows a 5-second connect timeout. To keep the code portable across .NET minor versions (the `ConnectAsync(int, CancellationToken)` overload's availability varies), a `CancellationTokenSource.CancelAfter(5000)` linked to the caller's CT was used for `ConnectAsync(CancellationToken)`. Functionally identical behaviour.
+
+### 2. `NoteOffAll` checks `_disposed` (not `_isReady`) as the gate
+The spec says "must work even if partially disposed". `NoteOffAll` uses `_disposed` (volatile) as the guard rather than `_isReady`, so it can still enqueue the command after `_isReady` has been cleared but before the channel is completed — matching AudioEngine's disposal sequence.
+
+### 3. OperationCanceledException handling in `LoadAsync`
+Two cancel paths are handled: (a) caller-cancelled (clean rollback, no BridgeFaulted event) vs. (b) internal 5s timeout (treated as fault, raises BridgeFaulted). The spec doesn't specify this distinction; it was added for correctness.
+
+### 4. Dispose does not await the pipe writer task
+The spec says "fire-and-forget" for shutdown. The writer task is cancelled via CTS and the channel is completed, but `Dispose()` does not `await` or `Wait()` the task beyond calling `Cancel()`. This keeps Dispose synchronous (matching the pattern of `SoundFontBackend`) and avoids potential deadlocks. The task will drain and exit naturally after the CTS fires.
+
+## Build Status
+
+**Result: ✅ BUILD SUCCEEDED**
+
+```
+dotnet build src\MinimalMusicKeyboard\MinimalMusicKeyboard.csproj --no-incremental
+Build succeeded in 9.4s — 0 errors, 0 warnings
+```
+
+No new warnings introduced. Existing code base unchanged.
+
+---
+
+### Jet: Phase 1 Fix-Up Report
+
+# Decision: Phase 1 Fix-Up — APPROVED
+
+**Author:** Jet (Windows Dev, standing in for Faye)
+**Date:** 2026-03-11
+**Fixes applied by:** Jet (Faye was locked out this cycle)
+
+## Fixes Applied
+
+### Fix 1 — Compilation error (AudioEngine.cs, line 177) ✅
+**Issue:** Stray extra closing parenthesis: `}));` inside `LoadSoundFont()`.
+**Fix:** Changed to `});` — deleted one `)`.
+**Impact:** This was the sole compilation blocker (CS1002 + CS1513).
+
+### Fix 2 — Interface threading contract (IInstrumentBackend.cs) ✅
+**Issue:** `NoteOn()`, `NoteOff()`, `NoteOffAll()` had summary docs saying "audio render thread only" but lacked the explicit `<remarks>` block Gren required for Phase 2 implementers.
+**Fix:** Added `<remarks>Called from the audio thread only. Do not call from the MIDI callback thread.</remarks>` to all three methods.
+
+### Fix 3 — Unused ConcurrentQueue field (SoundFontBackend.cs) ✅
+**Issue:** Constructor accepted `ConcurrentQueue<MidiCommand> commandQueue` and stored it as `_commandQueue`, but the field was never read anywhere in the class. Dead code from an earlier design sketch.
+**Fix:**
+- Removed the `private readonly ConcurrentQueue<MidiCommand> _commandQueue;` field.
+- Removed the `ConcurrentQueue<MidiCommand> commandQueue` constructor parameter and the `_commandQueue = ...` assignment.
+- Removed the now-unused `using System.Collections.Concurrent;` directive.
+- Updated `AudioEngine` constructor call from `new SoundFontBackend(path, _commandQueue)` to `new SoundFontBackend(path)` (necessary consequence of the parameter removal — not a separate change).
+
+## Build Verification
+
+Command: `dotnet build Q:\source\minimal-music-keyboard\MinimalMusicKeyboard.sln --no-incremental`
+
+**Result: Build succeeded — 0 errors, 0 warnings.**
+
+Both projects compiled cleanly:
+- `MinimalMusicKeyboard.Tests` — succeeded
+- `MinimalMusicKeyboard` — succeeded
+
+---
+
+### Gren: Phase 1 Fix Approval
+
+# Decision: Phase 1 Code Review — APPROVED (after fix-up)
+
+**Author:** Gren (Supporting Architect)
+**Date:** 2026-03-11
+**Status:** APPROVED
+
+## Context
+
+Phase 1 (IInstrumentBackend extraction, SoundFontBackend, AudioEngine refactor) was submitted by Faye and rejected by Gren with 1 BLOCKING + 2 REQUIRED issues. Per lockout rules, Jet applied all 3 fixes.
+
+## Fixes Verified
+
+1. **Stray paren (BLOCKING):** `AudioEngine.cs` line 177 — `}));` corrected to `});`. Build now passes 0 errors, 0 warnings.
+2. **Threading docs (REQUIRED):** `IInstrumentBackend.cs` — `<remarks>` tags added to NoteOn, NoteOff, NoteOffAll warning against MIDI callback thread usage.
+3. **Unused field (REQUIRED):** `SoundFontBackend.cs` — `_commandQueue` field, constructor parameter, and `using System.Collections.Concurrent` removed. `AudioEngine.cs` constructor call updated to match.
+
+## Verdict
+
+**APPROVED.** Phase 1 is complete. No new issues introduced.
+
+## Implications
+
+- Phase 2 (Vst3BridgeBackend) may now begin.
+- Faye is cleared for Vst3BridgeBackend implementation.
+- The IInstrumentBackend interface is now the stable contract for all future backend implementations.
+
+---
+
 ## Session: 2026-03-11 — Batch 3: Phase 1 Review & Build Verification
 
 ### Gren: Phase 1 Code Review

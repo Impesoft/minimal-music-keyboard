@@ -27,6 +27,25 @@
 
 <!-- append new learnings below -->
 
+### Phase 2 — Vst3BridgeBackend (2026-07-18)
+
+**Files created:**
+- `src/MinimalMusicKeyboard/Services/BridgeFaultedEventArgs.cs` — fault event args with `Reason` + `Exception?`
+- `src/MinimalMusicKeyboard/Services/Vst3BridgeBackend.cs` — full managed-side IPC bridge backend
+
+**Key design decisions:**
+- `Vst3BridgeBackend` implements both `IInstrumentBackend` and `ISampleProvider` (same pattern as `SoundFontBackend`).
+- Bridge is the named-pipe *server*; C# connects as a `NamedPipeClientStream` client. Pipe name: `mmk-vst3-{bridgePid}`.
+- `System.Threading.Channels.Channel<string>` (unbounded, single-reader) queues JSON command strings from the audio thread without blocking or allocating.
+- A background `Task` (started in `LoadAsync`) drains the channel and writes to the pipe; transitions to `Faulted` on `IOException`.
+- `float[] _audioWorkBuffer` is pre-allocated in `LoadAsync` to `frameSize * 2` floats; `Read()` uses `MemoryMappedViewAccessor.ReadArray<float>` with no allocations.
+- State machine uses a `_stateLock` object for transitions; `_isReady` and `_disposed` are `volatile bool` for hot-path reads.
+- `NoteOffAll` guards on `_disposed` (not `_isReady`) so it works on the AudioEngine dispose path after `_isReady` is cleared.
+- `LoadAsync` distinguishes caller-cancellation (clean rollback, no event) from internal timeout (fault + event).
+- When `mmk-vst3-bridge.exe` is absent: `IsReady` stays false, warning is logged, no exception thrown (Phase 3 bridge not yet built).
+
+**Build result:** ✅ Succeeded, 0 errors, 0 warnings.
+
 ### Phase 1 — Backend Extraction (2026-03-18)
 - AudioEngine now hosts a MixingSampleProvider and drains the MidiCommand queue on the audio thread, dispatching to IInstrumentBackend (SoundFontBackend) while preserving the Volatile swap pattern in the backend.
 - Bank select commands are tracked on the audio thread via pending MSB/LSB arrays and applied when ProgramChange is dispatched to the backend.

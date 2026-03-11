@@ -1361,3 +1361,45 @@ Produced the initial architecture document for Minimal Music Keyboard at `docs/a
 - **Faye:** MeltySynth + NAudio audio pipeline assumptions
 - **Ed:** Disposal chain testability
 
+---
+
+## 2026-03-11: Phase 2 Code Review Verdict (Initial — REJECTED)
+
+**Author:** Gren | **Status:** REJECTED (fixed by Jet, re-reviewed APPROVED)
+
+Phase 2 (Vst3BridgeBackend.cs) rejected with 3 issues:
+1. **🔴 BLOCKING:** IPC resource ownership reversed (bridge-as-server vs spec's host-as-server)
+2. **🟡 REQUIRED:** String allocations on audio thread (NoteOn/NoteOff/SetProgram)
+3. **🟡 REQUIRED:** Dispose() race — CTS cancellation preempts shutdown command
+
+Fixes assigned to Jet. Phase 3 blocked pending re-review.
+
+---
+
+## 2026-03-11: Jet Phase 2 Fixes Applied
+
+**Author:** Jet | **Status:** APPLIED
+
+All 3 fixes to Vst3BridgeBackend.cs:
+
+1. **IPC Ownership:** NamedPipeClientStream→ServerStream, OpenExisting→CreateNew, Bridge PID→Host PID in names. Creates resources before launching bridge.
+2. **Audio Thread:** New MidiCommand readonly struct (discriminated union). Channel<MidiCommand> instead of Channel<string>. Serialization moved to RunPipeWriterAsync() background task. Zero heap allocation on audio thread.
+3. **Dispose Race:** Writer.Complete() + 500ms drain wait + 2s graceful exit before force-kill. SHUTDOWN command reaches bridge before termination.
+
+Build: 0 errors, 2 harmless warnings (_frameSize unused).
+
+---
+
+## 2026-03-11: Phase 2 Code Review — Final Verdict (Re-review)
+
+**Author:** Gren | **Status:** ✅ APPROVED
+
+All three issues fully resolved:
+1. ✅ Host-as-server, host PID in names, matches vst3-architecture-proposal.md §3.2
+2. ✅ MidiCommand struct, serialization on drain task, zero audio thread allocations
+3. ✅ Writer drain before kill, SHUTDOWN command delivered before process termination
+
+Two build warnings (_frameSize unused) acceptable Phase 3 placeholder.
+
+**Decision:** APPROVED. Phase 2 complete. Phase 3 (native C++ bridge) cleared to begin.
+

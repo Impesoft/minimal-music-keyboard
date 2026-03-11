@@ -118,3 +118,53 @@
 4. **Architecture is sound** — Every significant design decision was correct: queue-drain ownership, Volatile swap preservation, SF2 cache pattern, LoadSoundFont retention for backward compat, volume in ReadSamples wrapper. The issues are mechanical, not architectural.
 
 **Lesson learned:** When reviewing a refactor that extracts code from class A to class B, verify that artifacts from abandoned design alternatives (like a constructor parameter for a pattern that was ultimately rejected) don't survive into the implementation. Code sketches in proposals are starting points — the implementation may correctly deviate, but must clean up remnants of the sketch's approach. Also: always build the code before reviewing. A compilation error should have been caught before review was requested.
+
+### 2026-03-11 — Phase 1 Re-Review (APPROVED)
+
+**Reviewed:** Jet's 3 fixes to Phase 1 implementation
+**Verdict:** APPROVED — all 3 issues resolved cleanly
+
+**Key findings:**
+
+1. **Jet's fixes were precisely scoped** — Each fix addressed exactly one issue from the rejection, with no collateral changes. The stray paren removal, `<remarks>` additions, and unused field cleanup were all surgically applied. This is how mechanical fixes should be done.
+
+2. **Build verification is non-negotiable** — Confirmed 0 errors, 0 warnings post-fix. The original BLOCKING issue was a compilation failure; verifying the build is the first and most important check on re-review.
+
+3. **Lockout rule worked as intended** — Faye wrote the original code, Jet applied the fixes. Fresh eyes on mechanical fixes prevents "blind spot" recurrence where the original author might miss the same issue twice.
+
+**Lesson learned:** When re-reviewing fixes to a rejected review, verify each fix individually against the original issue description, then do a holistic check for regressions. Don't assume "3 small fixes = no risk." Even mechanical changes can introduce issues if applied to the wrong line or with incorrect scope. Build verification is the final gate.
+
+### 2026-03-11 — Phase 2 Re-Review (APPROVED)
+
+**Reviewed:** Jet's 3 fixes to Phase 2 implementation (Vst3BridgeBackend)
+**Verdict:** APPROVED — all 3 issues resolved cleanly
+
+**Key findings:**
+
+1. **IPC ownership correctly reversed** — Host is now `NamedPipeServerStream` + `MemoryMappedFile.CreateNew()`, using host PID in all resource names. The flow (create IPC → launch bridge → WaitForConnectionAsync → send load → await ack) matches the approved spec §3.2 exactly. This is the most critical fix: the Phase 3 bridge can now be designed as a client connecting to host-owned resources, which was the original architectural intent.
+
+2. **Audio thread is now zero-allocation** — `Channel<MidiCommand>` with a `readonly struct` replaces `Channel<string>`. NoteOn/NoteOff/NoteOffAll/SetProgram write struct values into the channel. `SerializeCommand()` is confined to `RunPipeWriterAsync` (background drain task). The struct contains `string?` fields for Load/Shutdown, but those commands are never called from the audio thread, so no allocation concern.
+
+3. **Dispose shutdown sequence is correct** — `Writer.Complete()` causes `ReadAllAsync` to drain remaining items (including shutdown command) and exit naturally. The 500ms drain wait + 2s bridge grace period + force-kill fallback honours the spec's shutdown contract. CTS cancellation is cleanup-only, called after the task has exited. Subtle but important: `Complete()` does NOT cancel the enumeration — it signals end-of-stream, allowing the drain to finish.
+
+4. **Build warnings are acceptable** — Two warnings for unused `_frameSize` field. This is a Phase 3 placeholder for ring buffer spin-wait sync (spec §7.2). Removing now would be churn; Phase 3 will use it.
+
+**Lesson learned:** When a struct carries reference-type fields (like `string?`), verify that those fields are only populated on the intended thread. In `MidiCommand`, `Path` and `Preset` are set only for `Load` (called from LoadAsync, off-audio-thread) and default to `null` for audio-thread commands. The design is correct, but it requires discipline from future maintainers — a comment or code review note is warranted if anyone adds new command kinds that set these fields from the audio thread.
+
+### 2026-03-11 — Phase 2 Code Review (REJECTED)
+
+**Reviewed:** Phase 2 implementation (Faye) — Vst3BridgeBackend.cs, BridgeFaultedEventArgs.cs
+**Verdict:** REJECTED — 1 blocking + 2 required fixes
+**Full review:** `docs/phase2-code-review.md`
+
+**Key findings:**
+
+1. **BLOCKING: IPC resource ownership reversed** — The approved spec (v1.1 §3.2) explicitly states the host creates both the named pipe server and the MMF, using the host PID in resource names. The implementation reverses this: the host is a `NamedPipeClientStream` connecting to a bridge-owned pipe, and opens the MMF with `OpenExisting` (bridge creates it). Resource names use bridge PID instead of host PID. This is not a "either way works" choice — it was a deliberate architectural decision for crash recovery (stable names across bridge restarts, host retains handles on bridge crash). Getting this wrong in Phase 2 would propagate incorrect assumptions into Phase 3 bridge design.
+
+2. **REQUIRED: String allocation on audio render thread** — NoteOn, NoteOff, and SetProgram use C# string interpolation to build JSON commands, allocating a new string on every call. The class documentation explicitly says "no allocations, no blocking" but every MIDI event allocates. Fix: change `Channel<string>` to `Channel<BridgeCommand>` with a readonly struct, serialize to JSON in the background writer task.
+
+3. **REQUIRED: Dispose() race prevents graceful shutdown** — The disposal sequence calls `TryComplete()` → `Cancel()` → `Kill()` in rapid succession. Cancelling the writer CTS can prevent the shutdown command from being drained and sent to the bridge. The spec says wait 3s for graceful exit then force-kill; the implementation kills immediately with no grace period. Fix: wait for writer task drain, then give the bridge a grace period before killing.
+
+4. **Architecture is sound** — The state machine (5 states with lock-based transitions), silence-fill paths (3 guards in Read()), NoteOffAll resilience during teardown, Channel configuration (SingleReader, no synchronous continuations), and bridge-absent graceful handling are all well-designed. The issues are about spec compliance and audio-thread discipline, not structural.
+
+**Lesson learned:** When an architecture spec makes an explicit "who owns what" decision (like IPC resource ownership), verify the implementation matches that decision character-for-character. Ownership model reversals are subtle — the code "works" either way in isolation, but the assumptions propagate to the other side of the IPC boundary (the Phase 3 bridge). By the time the mismatch is discovered across a process boundary, it's much harder to fix. Always check resource creation vs. resource connection directionality.

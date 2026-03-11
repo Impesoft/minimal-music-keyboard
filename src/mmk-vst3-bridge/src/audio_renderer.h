@@ -1,17 +1,29 @@
 #pragma once
 
-#include <array>
 #include <atomic>
 #include <cstdint>
+#include <mutex>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include "mmf_writer.h"
+
+#include <pluginterfaces/base/funknown.h>
+#include <pluginterfaces/vst/ivstaudioprocessor.h>
+#include <pluginterfaces/vst/ivstcomponent.h>
+#include <pluginterfaces/vst/ivstevents.h>
+#include <public.sdk/source/vst/hosting/module.h>
+#include <public.sdk/source/vst/hosting/plugprovider.h>
 
 class AudioRenderer
 {
 public:
     AudioRenderer() = default;
     ~AudioRenderer();
+
+    bool Load(const std::string& pluginPath, const std::string& presetPath, std::string& errorMessage);
+    void Unload();
 
     void Start(MmfWriter* writer);
     void Stop();
@@ -21,45 +33,23 @@ public:
     void QueueNoteOffAll();
     void QueueSetProgram(int program);
 
+    void FillBuffer(float* output, int frameSize);
+
 private:
-    enum class MidiEventType : std::uint8_t
-    {
-        NoteOn,
-        NoteOff,
-        NoteOffAll,
-        SetProgram
-    };
-
-    struct MidiEvent
-    {
-        MidiEventType type{};
-        int channel = 0;
-        int pitch = 0;
-        int velocity = 0;
-        int program = 0;
-    };
-
-    class MidiEventQueue
-    {
-    public:
-        bool Push(const MidiEvent& evt);
-        bool Pop(MidiEvent& evt);
-
-    private:
-        static constexpr std::size_t kCapacity = 256;
-        std::array<MidiEvent, kCapacity> buffer_{};
-        std::atomic<std::size_t> writeIndex_{ 0 };
-        std::atomic<std::size_t> readIndex_{ 0 };
-    };
-
     void RenderLoop();
-    void RenderFrame(float* output, int frameSize);
+    void ResetPluginState();
 
     std::atomic<bool> running_{ false };
     std::thread renderThread_;
     MmfWriter* writer_ = nullptr;
     int frameSize_ = 0;
-    MidiEventQueue eventQueue_{};
+    std::mutex eventsMutex_;
+    std::vector<Steinberg::Vst::Event> pendingEvents_{};
+    std::mutex pluginMutex_;
+    VST3::Hosting::Module::Ptr module_{};
+    Steinberg::IPtr<Steinberg::Vst::IComponent> component_{};
+    Steinberg::IPtr<Steinberg::Vst::IAudioProcessor> processor_{};
 
-    static constexpr int kSampleRate = 48'000;
+    static constexpr int kSampleRate = 44'100;
+    static constexpr int kMaxBlockSize = 256;
 };

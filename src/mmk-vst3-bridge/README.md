@@ -12,7 +12,7 @@ cd src\mmk-vst3-bridge
 vcpkg install
 
 # Configure + build (MSVC)
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<path>\vcpkg\scripts\buildsystems\vcpkg.cmake
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<path>\vcpkg\scripts\buildsystems\vcpkg.cmake -DVST3_SDK_ROOT=..\..\..\extern\vst3sdk
 cmake --build build --config Release
 ```
 
@@ -20,8 +20,11 @@ cmake --build build --config Release
 
 The Steinberg VST3 SDK is not on vcpkg. Clone it separately and wire it into your build as needed:
 
-```
-extern/vst3sdk
+```powershell
+# From repo root
+git clone https://github.com/steinbergmedia/vst3sdk.git extern/vst3sdk --recurse-submodules
 ```
 
-The bridge currently stubs VST3 loading and renders silence. TODOs are left in the code for integrating `IPluginFactory`/`IAudioProcessor` once the SDK is available.
+If the SDK lives elsewhere, pass `-DVST3_SDK_ROOT=<path>` to CMake.
+
+The bridge renders silence if no plugin is loaded or if the plugin fails to initialize.

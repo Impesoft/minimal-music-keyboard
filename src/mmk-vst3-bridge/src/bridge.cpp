@@ -40,6 +40,7 @@ void Bridge::Shutdown()
         return;
 
     renderer_.Stop();
+    renderer_.Unload();
     mmfWriter_.Close();
     ipc_.Close();
 }
@@ -62,16 +63,15 @@ void Bridge::HandleCommand(const std::string& line)
         const auto path = message.value("path", std::string());
         const auto preset = message.value("preset", std::string());
 
-        // TODO: Load VST3 plugin via Steinberg SDK (IAudioProcessor). Stub returns OK.
-        const bool ok = !path.empty();
+        std::string error;
+        const bool ok = renderer_.Load(path, preset, error);
         nlohmann::json ack;
-        ack["ack"] = "load";
+        ack["ack"] = "load_ack";
         ack["ok"] = ok;
         if (!ok)
-            ack["error"] = "Missing VST3 plugin path.";
+            ack["error"] = error.empty() ? "Failed to load VST3 plugin." : error;
 
         ipc_.WriteLine(ack.dump());
-        (void)preset;
         return;
     }
 

@@ -494,7 +494,11 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
         {
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
-            if (!root.TryGetProperty("ack", out var ack) || ack.GetString() != "load")
+            if (!root.TryGetProperty("ack", out var ack))
+                return false;
+
+            var ackValue = ack.GetString();
+            if (ackValue != "load" && ackValue != "load_ack")
                 return false;
             if (!root.TryGetProperty("ok", out var ok) || !ok.GetBoolean())
             {

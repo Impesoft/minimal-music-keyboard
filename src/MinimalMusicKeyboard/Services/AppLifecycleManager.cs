@@ -93,6 +93,10 @@ public sealed class AppLifecycleManager : IDisposable
         {
             _settingsWindow = new SettingsWindow(_midi, _catalog, _audioEngine!, _switcher!, _settings, OnSettingsSaved);
 
+            // Set window icon (piano keys)
+            try { _settingsWindow.AppWindow.SetIcon(@"Assets\AppIcon.ico"); }
+            catch (Exception ex) { Debug.WriteLine($"[AppLifecycleManager] Icon load failed: {ex.Message}"); }
+
             // Position on first creation only.
             try
             {

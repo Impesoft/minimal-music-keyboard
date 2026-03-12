@@ -12,8 +12,6 @@ namespace MinimalMusicKeyboard.Services;
 /// </summary>
 public sealed class InstrumentCatalog
 {
-    private const string PlaceholderSoundFontPath = "[SoundFont Not Configured]";
-
     private List<InstrumentDefinition> _instruments;
     private readonly Dictionary<string, InstrumentDefinition> _byId;
     private readonly Dictionary<int, InstrumentDefinition> _byProgramNumber;
@@ -80,10 +78,10 @@ public sealed class InstrumentCatalog
     }
 
     /// <summary>
-    /// Adds or updates a VST3 instrument definition in the catalog and persists it.
-    /// Used for slot-specific VST3 instruments configured in the UI.
+    /// Adds or updates an instrument definition in the catalog and persists it.
+    /// Used for slot-specific instruments configured in the UI (both SF2 and VST3).
     /// </summary>
-    public void AddOrUpdateVst3Instrument(InstrumentDefinition instrument)
+    public void AddOrUpdateInstrument(InstrumentDefinition instrument)
     {
         var updated = _instruments.Where(i => !string.Equals(i.Id, instrument.Id, StringComparison.OrdinalIgnoreCase)).ToList();
         updated.Add(instrument);
@@ -139,17 +137,7 @@ public sealed class InstrumentCatalog
         return defaults;
     }
 
-    private static List<InstrumentDefinition> BuildDefaultCatalog() =>
-    [
-        new() { Id = "grand-piano",    DisplayName = "Grand Piano",    SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 0,  Category = "Piano"   },
-        new() { Id = "bright-piano",   DisplayName = "Bright Piano",   SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 1,  Category = "Piano"   },
-        new() { Id = "electric-piano", DisplayName = "Electric Piano", SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 4,  Category = "Piano"   },
-        new() { Id = "strings",        DisplayName = "Strings",        SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 48, Category = "Strings" },
-        new() { Id = "organ",          DisplayName = "Organ",          SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 16, Category = "Organ"   },
-        new() { Id = "pad",            DisplayName = "Pad",            SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 88, Category = "Pad"     },
-        new() { Id = "fingered-bass",  DisplayName = "Fingered Bass",  SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 33, Category = "Bass"    },
-        new() { Id = "choir",          DisplayName = "Choir Aahs",     SoundFontPath = PlaceholderSoundFontPath, BankNumber = 0, ProgramNumber = 52, Category = "Choir"   },
-    ];
+    private static List<InstrumentDefinition> BuildDefaultCatalog() => [];
 
     private static void SaveCatalog(string path, List<InstrumentDefinition> instruments)
     {

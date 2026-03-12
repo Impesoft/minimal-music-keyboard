@@ -51,9 +51,9 @@ public sealed class TrayIconService : IDisposable
             // in memory — no file loading, works correctly in unpackaged apps.
             IconSource = new GeneratedIconSource
             {
-                Text       = "♪",
+                Text       = "🎹",
                 Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
-                FontSize   = 24,
+                FontSize   = 20,
             },
         };
 

@@ -25,6 +25,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Content Include="Assets\AppIcon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- WinUI3 / Windows App SDK runtime — 1.6 required by H.NotifyIcon.WinUI 2.2+ -->
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260209005" />
     <!-- MIDI I/O — chosen in architecture Section 2 -->

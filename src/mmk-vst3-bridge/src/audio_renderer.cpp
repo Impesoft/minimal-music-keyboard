@@ -10,6 +10,7 @@
 
 #include "host_application.h"
 #include <pluginterfaces/base/ipluginbase.h>
+#include <pluginterfaces/vst/ivstaudioprocessor.h>
 #include <pluginterfaces/vst/ivstmidicontrollers.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/ivstmessage.h>
@@ -56,7 +57,7 @@ bool AudioRenderer::Load(const std::string& pluginPath, const std::string& prese
         classInfos.end(),
         [](const VST3::Hosting::ClassInfo& info)
         {
-            return info.category() == Steinberg::Vst::kVstAudioEffectClass;
+            return info.category() == kVstAudioEffectClass;
         });
 
     if (audioEffectClass == classInfos.end())

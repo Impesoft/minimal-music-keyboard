@@ -1,8 +1,7 @@
 using MinimalMusicKeyboard.Helpers;
 using MinimalMusicKeyboard.Interfaces;
 using MinimalMusicKeyboard.Models;
-using MinimalMusicKeyboard.Views;
-using Microsoft.UI.Windowing;
+using MinimalMusicKeyboard.Views;using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using System.Diagnostics;
 
@@ -74,6 +73,16 @@ public sealed class AppLifecycleManager : IDisposable
         // Step 5: Instrument switcher
         _switcher = new MidiInstrumentSwitcher(_catalog, _audioEngine, _midi);
         _switcher.UpdateButtonMappings(_settings.ButtonMappings);
+
+        // Auto-reload the first VST3 instrument found in the saved slots so the bridge
+        // is ready immediately (same UX as the previous session).
+        var savedVst3 = _settings.ButtonMappings
+            .Where(m => !string.IsNullOrEmpty(m.InstrumentId))
+            .Select(m => _catalog.GetById(m.InstrumentId!))
+            .FirstOrDefault(i => i?.Type == InstrumentType.Vst3
+                              && !string.IsNullOrEmpty(i.Vst3PluginPath));
+        if (savedVst3 is not null)
+            _audioEngine.SelectInstrument(savedVst3);
 
         // Step 6: Tray icon
         _tray.Initialize();

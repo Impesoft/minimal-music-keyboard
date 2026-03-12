@@ -431,8 +431,8 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
 
             var ackLine = await reader.ReadLineAsync(ackCts.Token).ConfigureAwait(false);
             if (!ParseEditorAck(ackLine, "editor_opened"))
-                throw new InvalidOperationException($"Bridge rejected openEditor command: {ackLine ?? "<no response>"}");
-
+                throw new InvalidOperationException(
+                    $"Failed to open editor: {ExtractBridgeError(ackLine)}");
             Debug.WriteLine("[Vst3BridgeBackend] Editor opened successfully.");
         }
         catch (OperationCanceledException)
@@ -477,8 +477,8 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
 
             var ackLine = await reader.ReadLineAsync(ackCts.Token).ConfigureAwait(false);
             if (!ParseEditorAck(ackLine, "editor_closed"))
-                throw new InvalidOperationException($"Bridge rejected closeEditor command: {ackLine ?? "<no response>"}");
-
+                throw new InvalidOperationException(
+                    $"Failed to close editor: {ExtractBridgeError(ackLine)}");
             Debug.WriteLine("[Vst3BridgeBackend] Editor closed successfully.");
         }
         catch (OperationCanceledException)
@@ -701,12 +701,30 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
             var root = doc.RootElement;
             if (!root.TryGetProperty("ack", out var ack))
                 return false;
-
-            return ack.GetString() == expectedAck;
+            if (ack.GetString() != expectedAck)
+                return false;
+            // If the bridge explicitly reports ok:false, treat as failure.
+            if (root.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.False)
+                return false;
+            return true;
         }
         catch
         {
             return false;
         }
+    }
+
+    /// <summary>Extracts the "error" field from a bridge ACK JSON line, or returns the raw line.</summary>
+    private static string ExtractBridgeError(string? response)
+    {
+        if (string.IsNullOrWhiteSpace(response)) return "<no response>";
+        try
+        {
+            using var doc = JsonDocument.Parse(response);
+            if (doc.RootElement.TryGetProperty("error", out var err))
+                return err.GetString() ?? response;
+        }
+        catch { }
+        return response;
     }
 }

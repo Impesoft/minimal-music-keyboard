@@ -36,7 +36,11 @@ public sealed partial class SettingsWindow : Window
         TextBlock SlotLabel,
         TextBlock TriggerLabel,
         Button MapButton,
-        InstrumentDefinition? SlotInstrument); // Tracks the full definition for VST3 support
+        InstrumentDefinition? SlotInstrument, // Tracks the full definition for VST3 support
+        StackPanel? Vst3StatusRow,
+        TextBlock? Vst3StatusText,
+        Button? Vst3ReloadBtn,
+        Button? Vst3EditorBtn);
     private readonly List<MappingRowState> _mappingRows = new();
 
     // Listening-mode state (-1 = not listening)
@@ -44,6 +48,9 @@ public sealed partial class SettingsWindow : Window
     private DispatcherTimer? _listenTimer;
 
     private bool _forceClose;
+
+    // Tracks which slot index is currently loading a VST3 plugin (-1 = none)
+    private int _loadingVst3SlotIndex = -1;
 
     public SettingsWindow(
         MidiDeviceService       midi,
@@ -83,8 +90,9 @@ public sealed partial class SettingsWindow : Window
         // the window is visible or hidden.
         _switcher.ActiveInstrumentChanged += OnActiveInstrumentChanged;
 
-        // Surface VST3 load failures to the user via a dialog.
-        _audioEngine.InstrumentLoadFailed += OnInstrumentLoadFailed;
+        // Surface VST3 load state to the user via inline status and dialogs.
+        _audioEngine.InstrumentLoadFailed    += OnInstrumentLoadFailed;
+        _audioEngine.InstrumentLoadSucceeded += OnInstrumentLoadSucceeded;
 
         PopulateMidiDevices();
         PopulateAudioOutputDevices();
@@ -98,8 +106,9 @@ public sealed partial class SettingsWindow : Window
     public void ForceClose()
     {
         StopListening();
-        _switcher.ActiveInstrumentChanged -= OnActiveInstrumentChanged;
-        _audioEngine.InstrumentLoadFailed -= OnInstrumentLoadFailed;
+        _switcher.ActiveInstrumentChanged   -= OnActiveInstrumentChanged;
+        _audioEngine.InstrumentLoadFailed    -= OnInstrumentLoadFailed;
+        _audioEngine.InstrumentLoadSucceeded -= OnInstrumentLoadSucceeded;
         _forceClose = true;
         Close();
     }
@@ -118,6 +127,12 @@ public sealed partial class SettingsWindow : Window
         // This event fires on a background thread — dispatch to UI thread.
         DispatcherQueue.TryEnqueue(async () =>
         {
+            // Update per-slot inline status first.
+            int loadingSlot = _loadingVst3SlotIndex;
+            _loadingVst3SlotIndex = -1;
+            if (loadingSlot >= 0)
+                SetVst3SlotStatus(loadingSlot, $"❌ Failed: {errorMessage}", showReload: true, enableEditor: false);
+
             if (Content?.XamlRoot is null) return; // window not visible/loaded
 
             var dialog = new ContentDialog
@@ -129,6 +144,38 @@ public sealed partial class SettingsWindow : Window
             };
             try { await dialog.ShowAsync(); } catch { /* window closed mid-dialog */ }
         });
+    }
+
+    private void OnInstrumentLoadSucceeded(object? sender, string pluginPath)
+    {
+        // This event fires on a background thread — dispatch to UI thread.
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            int loadingSlot = _loadingVst3SlotIndex;
+            _loadingVst3SlotIndex = -1;
+            if (loadingSlot >= 0)
+                SetVst3SlotStatus(loadingSlot, "✅ VST3 plugin loaded", showReload: false, enableEditor: true);
+        });
+    }
+
+    private void SetVst3SlotStatus(int slotIdx, string statusText, bool showReload, bool enableEditor)
+    {
+        var row = _mappingRows.FirstOrDefault(r => r.SlotIndex == slotIdx);
+        if (row is null) return;
+
+        if (row.Vst3StatusText is not null)
+            row.Vst3StatusText.Text = statusText;
+
+        if (row.Vst3StatusRow is not null)
+            row.Vst3StatusRow.Visibility = string.IsNullOrEmpty(statusText)
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+
+        if (row.Vst3ReloadBtn is not null)
+            row.Vst3ReloadBtn.Visibility = showReload ? Visibility.Visible : Visibility.Collapsed;
+
+        if (row.Vst3EditorBtn is not null)
+            row.Vst3EditorBtn.IsEnabled = enableEditor;
     }
 
     // -------------------------------------------------------------------------
@@ -393,6 +440,43 @@ public sealed partial class SettingsWindow : Window
             vst3PresetRow.Children.Add(vst3EditorBtn);
             cardContent.Children.Add(vst3PresetRow);
 
+            // VST3 load-status row — hidden until a load is in progress/complete
+            var vst3StatusRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(134, 2, 0, 0),
+                Spacing = 6,
+                Visibility = Visibility.Collapsed,
+            };
+            var vst3StatusText = new TextBlock
+            {
+                FontSize = 11,
+                Opacity = 0.8,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var vst3ReloadBtn = new Button
+            {
+                Content = "↻ Retry",
+                FontSize = 11,
+                Padding = new Thickness(6, 1, 6, 1),
+                VerticalAlignment = VerticalAlignment.Center,
+                Visibility = Visibility.Collapsed,
+            };
+            vst3ReloadBtn.Click += (_, _) =>
+            {
+                var rowState = _mappingRows.FirstOrDefault(r => r.SlotIndex == slotIdx);
+                var inst = rowState?.SlotInstrument;
+                if (inst is { Type: InstrumentType.Vst3 } && !string.IsNullOrEmpty(inst.Vst3PluginPath))
+                {
+                    _loadingVst3SlotIndex = slotIdx;
+                    SetVst3SlotStatus(slotIdx, "⏳ Loading VST3 plugin...", showReload: false, enableEditor: false);
+                    _switcher.SelectInstrumentFromUi(inst);
+                }
+            };
+            vst3StatusRow.Children.Add(vst3StatusText);
+            vst3StatusRow.Children.Add(vst3ReloadBtn);
+            cardContent.Children.Add(vst3StatusRow);
+
             // Wire up event handlers
             rbSf2.Checked += (_, _) =>
             {
@@ -401,6 +485,7 @@ public sealed partial class SettingsWindow : Window
                 sf2Btn.Visibility          = Visibility.Visible;
                 vst3PluginBtn.Visibility   = Visibility.Collapsed;
                 vst3PresetRow.Visibility   = Visibility.Collapsed;
+                vst3StatusRow.Visibility   = Visibility.Collapsed;
                 UpdateSlotInstrumentType(slotIdx, InstrumentType.SoundFont);
             };
             rbVst3.Checked += (_, _) =>
@@ -410,6 +495,10 @@ public sealed partial class SettingsWindow : Window
                 sf2Btn.Visibility          = Visibility.Collapsed;
                 vst3PluginBtn.Visibility   = Visibility.Visible;
                 vst3PresetRow.Visibility   = Visibility.Visible;
+                // Restore status row visibility if there's a status to show
+                vst3StatusRow.Visibility   = string.IsNullOrEmpty(vst3StatusText.Text)
+                    ? Visibility.Collapsed
+                    : Visibility.Visible;
                 UpdateSlotInstrumentType(slotIdx, InstrumentType.Vst3);
             };
 
@@ -474,6 +563,14 @@ public sealed partial class SettingsWindow : Window
                 vst3PluginLabel.Text = Path.GetFileName(path);
                 ToolTipService.SetToolTip(vst3PluginLabel, path);
                 _settings.ButtonMappings[slotIdx].InstrumentId = updated.Id;
+
+                // Immediately kick off loading and show status.
+                _loadingVst3SlotIndex = slotIdx;
+                vst3StatusText.Text = "⏳ Loading VST3 plugin...";
+                vst3StatusRow.Visibility = Visibility.Visible;
+                vst3ReloadBtn.Visibility = Visibility.Collapsed;
+                vst3EditorBtn.IsEnabled  = false;
+                _switcher.SelectInstrumentFromUi(updated);
             };
 
             vst3PresetBtn.Click += async (_, _) =>
@@ -494,6 +591,9 @@ public sealed partial class SettingsWindow : Window
 
             vst3EditorBtn.Click += async (_, _) =>
             {
+                // Disable during the async op — prevents multiple concurrent calls that
+                // would each try to show a ContentDialog when they timeout or fail.
+                vst3EditorBtn.IsEnabled = false;
                 try
                 {
                     var backend = _audioEngine.GetActiveBackend();
@@ -537,10 +637,14 @@ public sealed partial class SettingsWindow : Window
                     };
                     await dialog.ShowAsync();
                 }
+                finally
+                {
+                    vst3EditorBtn.IsEnabled = true;
+                }
             };
 
             ButtonMappingsPanel.Children.Add(card);
-            _mappingRows.Add(new MappingRowState(i, slotBadge, slotLabel, triggerLabel, mapBtn, slotInstrument));
+            _mappingRows.Add(new MappingRowState(i, slotBadge, slotLabel, triggerLabel, mapBtn, slotInstrument, vst3StatusRow, vst3StatusText, vst3ReloadBtn, vst3EditorBtn));
         }
     }
 

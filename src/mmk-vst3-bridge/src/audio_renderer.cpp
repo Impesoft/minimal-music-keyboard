@@ -459,9 +459,10 @@ bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
     if (w <= 0) w = 800;
     if (h <= 0) h = 600;
 
-    // Win32 rule: the message loop MUST run on the same thread that created the window.
-    // We create the window AND run the pump inside editorThread_ to satisfy this requirement.
-    // A shared_ptr<promise> lets the calling thread wait for window creation to complete.
+    // Win32 rule: window creation, attached(), and message pump must all run on the same thread.
+    // Additionally many plugins call SendMessage (or trigger WM_PAINT) from inside attached(),
+    // which requires the message pump to be running BEFORE attached() is called.
+    // We defer attached() by posting it as WM_APP+1 so it fires after GetMessageW starts.
     auto readyPromise = std::make_shared<std::promise<std::pair<bool, std::string>>>();
     auto readyFuture = readyPromise->get_future();
 
@@ -489,21 +490,27 @@ bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
 
         editorHwnd_ = hwnd;
 
-        if (plugView_->attached(reinterpret_cast<void*>(hwnd), Steinberg::kPlatformTypeHWND) != Steinberg::kResultOk)
-        {
-            DestroyWindow(hwnd);
-            editorHwnd_ = nullptr;
-            readyPromise->set_value({ false, "IPlugView::attached() failed." });
-            return;
-        }
-
-        editorOpen_ = true;
-        readyPromise->set_value({ true, {} });
+        // Post attached() work as a window message so it runs AFTER the pump starts.
+        // WM_APP+1 (0x8001) is in the private application range — safe from system conflicts.
+        PostMessageW(hwnd, WM_APP + 1, 0, 0);
 
         // Message loop runs on THIS thread — which owns the window
         MSG msg{};
         while (GetMessageW(&msg, nullptr, 0, 0) > 0)
         {
+            if (msg.message == WM_APP + 1 && msg.hwnd == hwnd)
+            {
+                // Pump is running — now call attached()
+                if (plugView_->attached(reinterpret_cast<void*>(hwnd), Steinberg::kPlatformTypeHWND) != Steinberg::kResultOk)
+                {
+                    readyPromise->set_value({ false, "IPlugView::attached() failed." });
+                    PostMessageW(hwnd, WM_QUIT, 0, 0);
+                    continue;
+                }
+                editorOpen_ = true;
+                readyPromise->set_value({ true, {} });
+                continue;
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -522,14 +529,17 @@ bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
         }
     });
 
-    // Wait up to 5 seconds for the window to open
-    if (readyFuture.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
+    // Wait up to 10 seconds for attached() to complete.
+    // We use 10s because some complex plugins take a while to initialise their UI.
+    if (readyFuture.wait_for(std::chrono::seconds(10)) != std::future_status::ready)
     {
         editorOpen_ = false;
+        // DO NOT join — editorThread_ may be stuck inside attached(). Detach to avoid deadlock.
         if (editorHwnd_) PostMessageW(editorHwnd_, WM_QUIT, 0, 0);
-        if (editorThread_.joinable()) editorThread_.join();
+        if (editorThread_.joinable()) editorThread_.detach();
         plugView_ = nullptr;
-        errorMessage = "Timed out waiting for editor window to open.";
+        editorHwnd_ = nullptr;
+        errorMessage = "Timed out waiting for editor window (plugin attached() may be blocking).";
         return false;
     }
 

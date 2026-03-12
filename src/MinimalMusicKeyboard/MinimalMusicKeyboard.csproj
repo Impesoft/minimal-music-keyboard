@@ -30,6 +30,20 @@
     </Content>
   </ItemGroup>
 
+  <!-- Auto-deploy the VST3 bridge binary alongside the app on every build -->
+  <Target Name="CopyVst3Bridge" AfterTargets="Build">
+    <PropertyGroup>
+      <BridgeSource>$(MSBuildThisFileDirectory)..\..\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe</BridgeSource>
+      <BridgeFallback>$(OutputPath)mmk-vst3-bridge.exe</BridgeFallback>
+    </PropertyGroup>
+    <Copy SourceFiles="$(BridgeSource)" DestinationFolder="$(OutputPath)"
+          SkipUnchangedFiles="true" Condition="Exists('$(BridgeSource)')" />
+    <Message Text="VST3 bridge deployed to $(OutputPath)" Importance="normal"
+             Condition="Exists('$(BridgeSource)')" />
+    <Message Text="WARNING: mmk-vst3-bridge.exe source not found at $(BridgeSource) — bridge was not auto-deployed."
+             Importance="high" Condition="!Exists('$(BridgeSource)') AND !Exists('$(BridgeFallback)')" />
+  </Target>
+
   <ItemGroup>
     <!-- WinUI3 / Windows App SDK runtime — 1.6 required by H.NotifyIcon.WinUI 2.2+ -->
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260209005" />

@@ -75,6 +75,10 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
     private Task? _pipeWriterTask;
     private CancellationTokenSource? _writerCts;
 
+    // Serialises pipe writes between RunPipeWriterAsync (audio thread) and
+    // OpenEditorAsync / CloseEditorAsync (UI thread).
+    private readonly SemaphoreSlim _pipeLock = new(1, 1);
+
     // ── Shared-memory audio ring buffer ───────────────────────────────────────
 
     // Header layout (little-endian, all int32):
@@ -212,6 +216,14 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
             BridgeFaulted?.Invoke(this, new BridgeFaultedEventArgs(reason));
             return;
         }
+
+        bool needsReset;
+        lock (_stateLock)
+        {
+            needsReset = _state is BridgeState.Running or BridgeState.Faulted or BridgeState.Starting;
+        }
+        if (needsReset)
+            await ResetForReloadAsync().ConfigureAwait(false);
 
         lock (_stateLock)
         {
@@ -399,8 +411,16 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
             if (_pipeWriter is not { } writer)
                 throw new InvalidOperationException("Pipe writer is not available.");
 
-            await writer.WriteLineAsync(json.AsMemory()).ConfigureAwait(false);
-            await writer.FlushAsync().ConfigureAwait(false);
+            await _pipeLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await writer.WriteLineAsync(json.AsMemory()).ConfigureAwait(false);
+                await writer.FlushAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                _pipeLock.Release();
+            }
 
             // Await editor_opened ACK (5 second timeout)
             using var ackCts = new CancellationTokenSource();
@@ -437,8 +457,16 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
             if (_pipeWriter is not { } writer)
                 throw new InvalidOperationException("Pipe writer is not available.");
 
-            await writer.WriteLineAsync(json.AsMemory()).ConfigureAwait(false);
-            await writer.FlushAsync().ConfigureAwait(false);
+            await _pipeLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await writer.WriteLineAsync(json.AsMemory()).ConfigureAwait(false);
+                await writer.FlushAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                _pipeLock.Release();
+            }
 
             // Await editor_closed ACK (5 second timeout)
             using var ackCts = new CancellationTokenSource();
@@ -506,9 +534,53 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
         _mmf?.Dispose();
         _bridgeProcess?.Dispose();
         _writerCts?.Dispose();
+        _pipeLock.Dispose();
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Tears down a previous bridge session without permanently closing the command channel.
+    /// Called at the start of <see cref="LoadAsync"/> when the backend is being reloaded.
+    /// Unlike <see cref="Dispose"/>, this leaves the instance usable for a subsequent load.
+    /// </summary>
+    private async Task ResetForReloadAsync()
+    {
+        _isReady = false;
+        _lastReadPos = -1;
+
+        // Stop the background writer task first
+        _writerCts?.Cancel();
+        if (_pipeWriterTask is { } writerTask)
+        {
+            try { await writerTask.WaitAsync(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false); }
+            catch { /* cancelled or timed out — safe to continue */ }
+            _pipeWriterTask = null;
+        }
+        _writerCts?.Dispose();
+        _writerCts = null;
+
+        // Kill the old bridge process
+        if (_bridgeProcess is { HasExited: false } proc)
+        {
+            try { proc.Kill(); } catch { }
+            try { proc.WaitForExit(500); } catch { }
+        }
+
+        // Dispose IPC resources — order matters: writers first, then streams, then handles
+        _pipeWriter?.Dispose(); _pipeWriter = null;
+        _pipeReader?.Dispose(); _pipeReader = null;
+        _pipeServer?.Dispose(); _pipeServer = null;
+        _mmfView?.Dispose();   _mmfView   = null;
+        _mmf?.Dispose();       _mmf       = null;
+        _bridgeProcess?.Dispose(); _bridgeProcess = null;
+
+        lock (_stateLock)
+        {
+            _state = BridgeState.NotStarted;
+        }
+    }
+
 
     private void ThrowIfDisposed()
     {
@@ -549,8 +621,16 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
                 try
                 {
                     var json = SerializeCommand(cmd);
-                    await writer.WriteLineAsync(json.AsMemory(), ct).ConfigureAwait(false);
-                    await writer.FlushAsync(ct).ConfigureAwait(false);
+                    await _pipeLock.WaitAsync(ct).ConfigureAwait(false);
+                    try
+                    {
+                        await writer.WriteLineAsync(json.AsMemory(), ct).ConfigureAwait(false);
+                        await writer.FlushAsync(ct).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        _pipeLock.Release();
+                    }
                 }
                 catch (OperationCanceledException)
                 {

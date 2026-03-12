@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <future>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -46,7 +47,6 @@ public:
 private:
     void RenderLoop();
     void ResetPluginState();
-    void EditorMessageLoop(HWND editorHwnd);
 
     std::atomic<bool> running_{ false };
     std::thread renderThread_;

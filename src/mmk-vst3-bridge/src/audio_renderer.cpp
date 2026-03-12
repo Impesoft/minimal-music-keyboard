@@ -459,42 +459,88 @@ bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
     if (w <= 0) w = 800;
     if (h <= 0) h = 600;
 
-    // Create a dedicated Win32 window to host the plugin view
-    WNDCLASSEXW wc{};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = DefWindowProcW;
-    wc.hInstance = GetModuleHandleW(nullptr);
-    wc.lpszClassName = L"MmkVst3Editor";
-    RegisterClassExW(&wc); // idempotent — ok if already registered
+    // Win32 rule: the message loop MUST run on the same thread that created the window.
+    // We create the window AND run the pump inside editorThread_ to satisfy this requirement.
+    // A shared_ptr<promise> lets the calling thread wait for window creation to complete.
+    auto readyPromise = std::make_shared<std::promise<std::pair<bool, std::string>>>();
+    auto readyFuture = readyPromise->get_future();
 
-    HWND hwnd = CreateWindowExW(
-        0, L"MmkVst3Editor", L"VST3 Editor",
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        CW_USEDEFAULT, CW_USEDEFAULT, w, h,
-        parentHwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
-
-    if (!hwnd)
+    editorThread_ = std::thread([this, parentHwnd, w, h, readyPromise]()
     {
+        // Register window class on this thread (idempotent)
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"MmkVst3Editor";
+        RegisterClassExW(&wc);
+
+        HWND hwnd = CreateWindowExW(
+            0, L"MmkVst3Editor", L"VST3 Editor",
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            CW_USEDEFAULT, CW_USEDEFAULT, w, h,
+            parentHwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+
+        if (!hwnd)
+        {
+            readyPromise->set_value({ false, "Failed to create Win32 host window." });
+            return;
+        }
+
+        editorHwnd_ = hwnd;
+
+        if (plugView_->attached(reinterpret_cast<void*>(hwnd), Steinberg::kPlatformTypeHWND) != Steinberg::kResultOk)
+        {
+            DestroyWindow(hwnd);
+            editorHwnd_ = nullptr;
+            readyPromise->set_value({ false, "IPlugView::attached() failed." });
+            return;
+        }
+
+        editorOpen_ = true;
+        readyPromise->set_value({ true, {} });
+
+        // Message loop runs on THIS thread — which owns the window
+        MSG msg{};
+        while (GetMessageW(&msg, nullptr, 0, 0) > 0)
+        {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+
+        // Cleanup on editor thread
+        editorOpen_ = false;
+        if (plugView_)
+        {
+            plugView_->removed();
+            plugView_ = nullptr;
+        }
+        if (editorHwnd_)
+        {
+            DestroyWindow(editorHwnd_);
+            editorHwnd_ = nullptr;
+        }
+    });
+
+    // Wait up to 5 seconds for the window to open
+    if (readyFuture.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
+    {
+        editorOpen_ = false;
+        if (editorHwnd_) PostMessageW(editorHwnd_, WM_QUIT, 0, 0);
+        if (editorThread_.joinable()) editorThread_.join();
         plugView_ = nullptr;
-        errorMessage = "Failed to create Win32 host window.";
+        errorMessage = "Timed out waiting for editor window to open.";
         return false;
     }
 
-    editorHwnd_ = hwnd;
-
-    if (plugView_->attached(reinterpret_cast<void*>(hwnd), Steinberg::kPlatformTypeHWND) != Steinberg::kResultOk)
+    auto [ok, error] = readyFuture.get();
+    if (!ok)
     {
-        DestroyWindow(hwnd);
-        editorHwnd_ = nullptr;
+        if (editorThread_.joinable()) editorThread_.join();
         plugView_ = nullptr;
-        errorMessage = "IPlugView::attached() failed.";
+        errorMessage = error;
         return false;
     }
-
-    editorOpen_ = true;
-
-    // Run message pump on a separate thread so the bridge command loop stays responsive
-    editorThread_ = std::thread(&AudioRenderer::EditorMessageLoop, this, hwnd);
 
     return true;
 }
@@ -507,34 +553,21 @@ void AudioRenderer::CloseEditor()
     editorOpen_ = false;
 
     if (editorHwnd_)
-    {
-        PostMessageW(editorHwnd_, WM_QUIT, 0, 0); // wake up message loop
-    }
+        PostMessageW(editorHwnd_, WM_QUIT, 0, 0);
 
     if (editorThread_.joinable())
         editorThread_.join();
 
+    // editorThread_ cleans up plugView_ and editorHwnd_ itself;
+    // guard here in case the thread exited before cleanup (e.g. window closed by user).
     if (plugView_)
     {
         plugView_->removed();
         plugView_ = nullptr;
     }
-
     if (editorHwnd_)
     {
         DestroyWindow(editorHwnd_);
         editorHwnd_ = nullptr;
-    }
-}
-
-void AudioRenderer::EditorMessageLoop(HWND editorHwnd)
-{
-    MSG msg{};
-    while (editorOpen_.load())
-    {
-        if (GetMessageW(&msg, nullptr, 0, 0) <= 0)
-            break;
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
     }
 }

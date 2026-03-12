@@ -476,10 +476,19 @@ bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
         wc.lpszClassName = L"MmkVst3Editor";
         RegisterClassExW(&wc);
 
+        // The plugin's getSize() reports the required CLIENT area dimensions.
+        // AdjustWindowRect inflates those to the full window size that gives us
+        // exactly w×h of client area (accounting for title bar + borders).
+        RECT winRect{ 0, 0, w, h };
+        AdjustWindowRect(&winRect, WS_OVERLAPPEDWINDOW, FALSE);
+        const int winW = winRect.right  - winRect.left;
+        const int winH = winRect.bottom - winRect.top;
+
         HWND hwnd = CreateWindowExW(
-            0, L"MmkVst3Editor", L"VST3 Editor",
+            WS_EX_APPWINDOW,
+            L"MmkVst3Editor", L"VST3 Editor",
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-            CW_USEDEFAULT, CW_USEDEFAULT, w, h,
+            CW_USEDEFAULT, CW_USEDEFAULT, winW, winH,
             parentHwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
 
         if (!hwnd)
@@ -507,6 +516,10 @@ bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
                     PostMessageW(hwnd, WM_QUIT, 0, 0);
                     continue;
                 }
+                // Force initial paint and bring window to front so it doesn't
+                // get buried behind the settings window.
+                UpdateWindow(hwnd);
+                SetForegroundWindow(hwnd);
                 editorOpen_ = true;
                 readyPromise->set_value({ true, {} });
                 continue;

@@ -551,13 +551,18 @@ public sealed partial class SettingsWindow : Window
                 var currentInst = rowState?.SlotInstrument ?? new InstrumentDefinition
                 {
                     Id = $"vst3-slot-{slotIdx}",
-                    DisplayName = $"VST3 Slot {slotIdx + 1}",
+                    DisplayName = Path.GetFileNameWithoutExtension(path),
                     Type = InstrumentType.Vst3,
                     BankNumber = 0,
                     ProgramNumber = slotIdx,
                 };
 
-                var updated = currentInst with { Vst3PluginPath = path };
+                var updated = currentInst with
+                {
+                    Vst3PluginPath = path,
+                    // Refresh the display name from the new filename each time a plugin is picked.
+                    DisplayName = Path.GetFileNameWithoutExtension(path),
+                };
                 UpdateSlotInstrument(slotIdx, updated);
                 _catalog.AddOrUpdateInstrument(updated);
                 vst3PluginLabel.Text = Path.GetFileName(path);

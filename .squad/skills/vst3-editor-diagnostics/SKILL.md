@@ -36,6 +36,14 @@ For actual editor creation, emit stage-specific failures for:
 - Win32 host window creation failing (`CreateWindowExW` + `GetLastError()`)
 - `IPlugView::attached(HWND)` failing or timing out
 
+### Keep managed/UI diagnostics independent from active-backend switching
+If the host delays `activeBackend` assignment until VST3 load succeeds, the UI must not use `GetActiveBackend()` as the only source of truth for editor availability. Preserve the latest VST3 diagnostic in a host-level accessor and use that for:
+- inline slot status text
+- "editor not available" dialogs
+- retry/error flows after load faults
+
+Also restore editor-button enabled state from the current capability check, not with an unconditional `finally { button.IsEnabled = true; }`.
+
 ## Example
 - Load ACK: `supportsEditor=false`, `editorDiagnostics="Editor controller discovery: direct IEditController query failed (kNoInterface). controller class ID lookup succeeded (...). factory createInstance for controller failed (kNoInterface). editor GUI unavailable after controller discovery."`
 - Open-editor failure: `"Editor open failed at isPlatformTypeSupported(HWND): kNotImplemented."`

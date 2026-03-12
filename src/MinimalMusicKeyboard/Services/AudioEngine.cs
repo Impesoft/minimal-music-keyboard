@@ -36,6 +36,9 @@ public sealed class AudioEngine : IAudioEngine
     /// <inheritdoc/>
     public event EventHandler<string>? InstrumentLoadFailed;
 
+    /// <inheritdoc/>
+    public event EventHandler<string>? InstrumentLoadSucceeded;
+
     // ── MIDI command queue (MIDI thread → audio thread, lock-free) ────────────
     private readonly ConcurrentQueue<MidiCommand> _commandQueue = new();
 
@@ -199,6 +202,7 @@ public sealed class AudioEngine : IAudioEngine
         if (_vst3Backend.IsReady)
         {
             Volatile.Write(ref _activeBackend, _vst3Backend);
+            InstrumentLoadSucceeded?.Invoke(this, instrument.Vst3PluginPath ?? instrument.DisplayName);
         }
         else
         {
@@ -312,6 +316,10 @@ public sealed class AudioEngine : IAudioEngine
     /// <inheritdoc/>
     public IInstrumentBackend? GetActiveBackend()
         => Volatile.Read(ref _activeBackend);
+
+    /// <inheritdoc/>
+    public string GetVst3EditorAvailabilityDescription()
+        => _vst3Backend.EditorAvailabilityDescription;
 
     // ── Disposal ───────────────────────────────────────────────────────────────
 

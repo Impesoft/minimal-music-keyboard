@@ -157,8 +157,8 @@ public sealed partial class SettingsWindow : Window
             {
                 bool editorAvailable = _audioEngine.GetActiveBackend() is IEditorCapable capable && capable.SupportsEditor;
                 string statusText = "✅ VST3 plugin loaded";
-                if (_audioEngine.GetActiveBackend() is Vst3BridgeBackend vst3 && !editorAvailable)
-                    statusText = $"ℹ️ {vst3.EditorAvailabilityDescription}";
+                if (!editorAvailable)
+                    statusText = $"ℹ️ {_audioEngine.GetVst3EditorAvailabilityDescription()}";
 
                 SetVst3SlotStatus(loadingSlot, statusText, showReload: false, enableEditor: editorAvailable);
             }
@@ -613,9 +613,9 @@ public sealed partial class SettingsWindow : Window
                     {
                         await capable.OpenEditorAsync();
                     }
-                    else if (backend is Vst3BridgeBackend vst3 && !vst3.IsReady)
+                    else if (_loadingVst3SlotIndex == slotIdx)
                     {
-                        // Backend is assigned but still loading — give the user a clear message.
+                        // Loading keeps the previous backend active until the VST3 bridge is ready.
                         var dialog = new ContentDialog
                         {
                             Title           = "VST3 Plugin Still Loading",
@@ -627,9 +627,7 @@ public sealed partial class SettingsWindow : Window
                     }
                     else
                     {
-                        var message = backend is Vst3BridgeBackend vst3Backend
-                            ? vst3Backend.EditorAvailabilityDescription
-                            : "The current instrument does not support an editor window, or the VST3 plugin has not loaded successfully.";
+                        var message = _audioEngine.GetVst3EditorAvailabilityDescription();
 
                         var dialog = new ContentDialog
                         {
@@ -646,8 +644,8 @@ public sealed partial class SettingsWindow : Window
                     Debug.WriteLine($"[SettingsWindow] Failed to open VST3 editor: {ex.Message}");
                     var dialog = new ContentDialog
                     {
-                        Title           = "Error",
-                        Content         = $"Failed to open editor: {ex.Message}",
+                        Title           = "Failed to Open Editor",
+                        Content         = ex.Message,
                         CloseButtonText = "OK",
                         XamlRoot        = this.Content.XamlRoot,
                     };
@@ -655,7 +653,8 @@ public sealed partial class SettingsWindow : Window
                 }
                 finally
                 {
-                    vst3EditorBtn.IsEnabled = true;
+                    vst3EditorBtn.IsEnabled = _audioEngine.GetActiveBackend() is IEditorCapable currentCapable &&
+                                              currentCapable.SupportsEditor;
                 }
             };
 

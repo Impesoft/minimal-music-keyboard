@@ -219,6 +219,23 @@ Added `<remarks>Called from the audio thread only. Do not call from the MIDI cal
 
 **Root cause 3 — No Assets folder:** The WinUI3 scaffold was created without default template assets. The `Assets\` folder did not exist and had no icon files.
 
+### Session: VST3 Editor Error Surfacing (2026-03-12)
+
+**Context:** OB-Xd 3 loaded elsewhere but this app still surfaced a generic "editor unavailable" path on the managed/UI side, masking the exact bridge diagnostic.
+
+**Fixes applied:**
+1. Added `IAudioEngine.GetVst3EditorAvailabilityDescription()` so the UI can read the latest bridge-supplied editor/load diagnostic even when the active backend is still SoundFont during VST3 load/failure.
+2. Updated `SettingsWindow` to use that diagnostic for inline VST3 status and the "Editor Not Available" dialog instead of falling back to generic text.
+3. Fixed the editor-button gating bug where the click handler always re-enabled the button in `finally`, even after failures or on non-editor-capable states.
+4. Preserved exact open-editor exception text by showing `ex.Message` directly instead of wrapping it in another generic prefix.
+
+**Build result:** `dotnet build src\MinimalMusicKeyboard\MinimalMusicKeyboard.csproj --no-incremental` → **Build succeeded in ~9.1s, 0 errors, 2 pre-existing warnings** (`CS0414` on `_frameSize` in `Vst3BridgeBackend`).
+
+**Key learnings:**
+1. **Do not key editor diagnostics off the active backend alone:** delayed VST3 activation means the old backend can remain active while the bridge is loading or faulted, so the UI needs a direct path to the last VST3 diagnostic.
+2. **UI finally-blocks can accidentally erase capability gating:** re-enabling an editor button unconditionally after a failed click restores a broken path and reintroduces generic dialogs.
+3. **Exception wrappers can hide the useful part of the message:** when bridge/editor code already returns a stage-specific failure string, surface that message directly in the dialog.
+
 **Fixes applied:**
 1. Created `src\MinimalMusicKeyboard\Assets\AppIcon.png` — minimal 32×32 PNG icon generated via System.Drawing.
 2. Added explicit `<Content Include="Assets\AppIcon.png"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>` to `.csproj` — ensures the file copies to the output directory and is accessible via `ms-appx:///Assets/AppIcon.png`.

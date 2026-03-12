@@ -16,6 +16,13 @@ public interface IAudioEngine : IDisposable
     /// </summary>
     event EventHandler<string>? InstrumentLoadFailed;
 
+    /// <summary>
+    /// Raised when a VST3 instrument loads successfully and the backend is ready for playback.
+    /// The string argument is the plugin path (or display name if path is unavailable).
+    /// May be raised on a background thread — subscribers must marshal to the UI thread if needed.
+    /// </summary>
+    event EventHandler<string>? InstrumentLoadSucceeded;
+
     /// <summary>Trigger a note-on event (key pressed). Thread-safe — callable from MIDI callback.</summary>
     void NoteOn(int channel, int note, int velocity);
 
@@ -64,4 +71,9 @@ public interface IAudioEngine : IDisposable
     /// Returns null if no backend is active.
     /// </summary>
     IInstrumentBackend? GetActiveBackend();
+
+    /// <summary>
+    /// Returns the latest VST3 editor availability or failure diagnostic reported by the bridge backend.
+    /// </summary>
+    string GetVst3EditorAvailabilityDescription();
 }

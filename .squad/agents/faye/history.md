@@ -347,3 +347,24 @@
 - `dotnet build .\MinimalMusicKeyboard.sln --no-incremental` ✅
 - `dotnet test .\MinimalMusicKeyboard.sln --no-build` ✅ (0 discovered tests; existing warning unchanged)
 - `"C:\Program Files\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe" src\mmk-vst3-bridge\build\mmk-vst3-bridge.sln /m /p:Configuration=Release /p:Platform=x64` ✅
+
+### VST3 Editor Diagnostics & Shared-Controller Bug (2026-03-12)
+
+**Files modified:**
+- \src/mmk-vst3-bridge/src/audio_renderer.h\ — Removed single-object coupling workaround
+- \src/mmk-vst3-bridge/src/audio_renderer.cpp\ — Improved error reporting with stage-specific diagnostics
+- \src/MinimalMusicKeyboard/Services/Vst3BridgeBackend.cs\ — New supportsEditor, editorDiagnostics fields
+- \src/MinimalMusicKeyboard/Views/SettingsWindow.xaml.cs\ — UI now displays exact failure reason
+
+**Problems fixed:**
+1. **Generic editor failure message:** All editor failures reported as 'No IEditController' regardless of actual failure stage (e.g., HWND creation failed, IPlugView::attached failed). Made debugging OB-Xd GUI issues impossible.
+2. **Coupled single-object controller/component:** Some plugins expose both IComponent and IEditController on the same COM object. Bridge was calling initialize() twice and connecting IConnectionPoint to itself, causing crashes/undefined behavior during teardown.
+
+**Solution:**
+- Propagate structured diagnostics from each editor bring-up stage (controller query, class lookup, factory, initialization, createView, HWND, Win32 host window, attached)
+- For single-object plugins: skip second initialize() and don't connect/disconnect IConnectionPoint to self
+- Return supportsEditor + editorDiagnostics array in load_ack
+- SettingsWindow displays specific reason (stage + error code) when editor unavailable
+
+**Status:** All builds clean, tests passing. Commit 16482e7.
+

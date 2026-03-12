@@ -1962,3 +1962,43 @@ Events fire on background thread; UI thread marshaling handled in handlers.
 - src/MinimalMusicKeyboard/Interfaces/IAudioEngine.cs
 - src/MinimalMusicKeyboard/Services/AudioEngine.cs
 - src/MinimalMusicKeyboard/Views/SettingsWindow.xaml.cs
+
+## 2026-03-12: VST3 Editor Diagnostics and Shared-Controller Bug (Faye)
+
+**Author:** Faye (Audio Dev)
+**Date:** 2026-03-12
+**Status:** IMPLEMENTED — All builds clean, tests passing (commit 16482e7)
+
+### Problem
+
+1. **Generic editor failure message:** All VST3 editor failures reported as 'No IEditController' regardless of actual failure stage. Impossible to debug plugin-specific GUI issues like OB-Xd.
+2. **Coupled single-object crash:** Some plugins expose both IComponent and IEditController on the same COM object. Bridge was calling initialize() twice and connecting IConnectionPoint to itself, causing crashes during teardown.
+
+### Solution
+
+Propagate structured stage-specific diagnostics instead of generic failure. For each editor bring-up stage (controller query, class lookup, factory instantiation, controller initialization, createView(), HWND support, Win32 host window creation, IPlugView::attached()), capture exact error code and stage name.
+
+**Single-object fix:** Detect when controller and component are the same COM object — skip redundant initialize() and don't connect IConnectionPoint to itself.
+
+### Implementation
+
+**Diagnostics propagation:**
+- udio_renderer.cpp: Loop through each stage, report error + stage name if failure
+- Vst3BridgeBackend.cs: New supportsEditor bool and editorDiagnostics list (stage + errorCode)
+- SettingsWindow.xaml.cs: Display exact failure reason (stage + code) when editor unavailable
+
+**Single-object handling:**
+- Query IEditController, check if COM identity matches IComponent
+- If same: skip second initialize(), don't connect IConnectionPoint
+- If different: proceed with standard two-object initialization
+
+### Files Modified
+
+- src/mmk-vst3-bridge/src/audio_renderer.h — Removed coupled workaround, added stage diagnostics
+- src/mmk-vst3-bridge/src/audio_renderer.cpp — Stage loop, error propagation
+- src/MinimalMusicKeyboard/Services/Vst3BridgeBackend.cs — supportsEditor, editorDiagnostics
+- src/MinimalMusicKeyboard/Views/SettingsWindow.xaml.cs — Diagnostic display in UI
+
+### Result
+
+Settings window now shows exact reason when VST3 editor unavailable (e.g., "IPlugView::attached() returned kNotImplemented" or "Win32 host window creation failed: E_FAIL"). Enabled troubleshooting for OB-Xd and other single-object plugins.

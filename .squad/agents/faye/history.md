@@ -328,3 +328,22 @@
 
 **Related decision records:** `.squad/decisions.md` Section "Session: 2026-03-12 — VST3 Load Race Condition Fix"
 
+
+### VST3 Editor Diagnostics + Shared-Controller Fix (2026-03-12)
+
+**Files modified:**
+- `src/mmk-vst3-bridge/src/audio_renderer.h` — added editor capability/diagnostic state and shared-controller tracking
+- `src/mmk-vst3-bridge/src/audio_renderer.cpp` — staged editor diagnostics, richer open-editor errors, skipped double initialize/terminate for shared component+controller
+- `src/mmk-vst3-bridge/src/bridge.cpp` — load ACK now includes `supportsEditor` and `editorDiagnostics`
+- `src/MinimalMusicKeyboard/Services/Vst3BridgeBackend.cs` — parses editor diagnostics from load ACK and exposes editor availability reason
+- `src/MinimalMusicKeyboard/Views/SettingsWindow.xaml.cs` — shows backend-provided editor reason instead of generic dialog text
+
+**Key learnings:**
+- VST3 editor failures need stage-specific reporting: direct controller query, controller class lookup, factory instantiation, controller initialize, `createView`, HWND support, Win32 host window creation, and `attached()` can all fail independently.
+- Some VST3 plugins expose `IComponent` and `IEditController` on the same object. In that case the bridge must not call `initialize()` / `terminate()` twice or try to connect the object to itself via `IConnectionPoint`.
+- Surfacing editor capability in the load ACK lets the WinUI layer disable the editor button and show the exact bridge diagnosis before the user retries.
+
+**Verification:**
+- `dotnet build .\MinimalMusicKeyboard.sln --no-incremental` ✅
+- `dotnet test .\MinimalMusicKeyboard.sln --no-build` ✅ (0 discovered tests; existing warning unchanged)
+- `"C:\Program Files\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe" src\mmk-vst3-bridge\build\mmk-vst3-bridge.sln /m /p:Configuration=Release /p:Platform=x64` ✅

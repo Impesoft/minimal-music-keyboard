@@ -68,6 +68,8 @@ void Bridge::HandleCommand(const std::string& line)
         nlohmann::json ack;
         ack["ack"] = "load_ack";
         ack["ok"] = ok;
+        ack["supportsEditor"] = renderer_.SupportsEditor();
+        ack["editorDiagnostics"] = renderer_.GetEditorDiagnostics();
         if (!ok)
             ack["error"] = error.empty() ? "Failed to load VST3 plugin." : error;
 

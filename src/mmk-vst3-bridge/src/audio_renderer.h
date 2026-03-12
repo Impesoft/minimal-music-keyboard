@@ -41,6 +41,8 @@ public:
 
     bool OpenEditor(HWND parentHwnd, std::string& errorMessage);
     void CloseEditor();
+    bool SupportsEditor() const;
+    const std::string& GetEditorDiagnostics() const;
 
     void FillBuffer(float* output, int frameSize);
 
@@ -61,6 +63,9 @@ private:
     Steinberg::IPtr<Steinberg::Vst::IAudioProcessor> processor_{};
     Steinberg::IPtr<Steinberg::Vst::IEditController> controller_{};
     Steinberg::IPtr<Steinberg::IPlugView> plugView_{};
+    bool controllerSharesComponent_{ false };
+    bool supportsEditor_{ false };
+    std::string editorDiagnostics_{ "Editor support not evaluated yet." };
     std::thread editorThread_{};
     HWND editorHwnd_{ nullptr };
     std::atomic<bool> editorOpen_{ false };

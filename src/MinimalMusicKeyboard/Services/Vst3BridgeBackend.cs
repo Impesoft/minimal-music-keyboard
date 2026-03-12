@@ -45,6 +45,8 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
     private volatile bool _isReady;
     private volatile bool _disposed;
     private volatile int _lastReadPos = -1;
+    private volatile bool _supportsEditor;
+    private string _editorAvailabilityDescription = "VST3 plugin has not been loaded yet.";
 
     // ── IPC resources ─────────────────────────────────────────────────────────
 
@@ -212,6 +214,7 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
         if (!File.Exists(bridgeExePath))
         {
             var reason = $"Bridge executable not found at '{bridgeExePath}'. Deploy mmk-vst3-bridge.exe to enable VST3 support.";
+            _editorAvailabilityDescription = reason;
             Debug.WriteLine($"[Vst3BridgeBackend] {reason}");
             BridgeFaulted?.Invoke(this, new BridgeFaultedEventArgs(reason));
             return;
@@ -297,9 +300,14 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
             ackCts.CancelAfter(TimeSpan.FromSeconds(5));
             var ackLine = await _pipeReader.ReadLineAsync(ackCts.Token).ConfigureAwait(false);
 
-            if (!ParseLoadAck(ackLine, out var errorMessage))
+            if (!ParseLoadAck(ackLine, out var errorMessage, out var supportsEditor, out var editorDiagnostics))
                 throw new InvalidOperationException(
                     $"Bridge rejected load command: {errorMessage ?? ackLine ?? "<no response>"}");
+
+            _supportsEditor = supportsEditor;
+            _editorAvailabilityDescription = string.IsNullOrWhiteSpace(editorDiagnostics)
+                ? (supportsEditor ? "Plugin editor is available." : "Plugin editor is not available.")
+                : editorDiagnostics;
 
             // ── Step 6: Start dedicated pipe writer task ──────────────────────
             _writerCts = new CancellationTokenSource();
@@ -393,13 +401,18 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
     // ── IEditorCapable ────────────────────────────────────────────────────────
 
     /// <inheritdoc/>
-    public bool SupportsEditor => _isReady;
+    public bool SupportsEditor => _isReady && _supportsEditor;
+
+    /// <summary>Human-readable description of the current editor availability state.</summary>
+    public string EditorAvailabilityDescription => _editorAvailabilityDescription;
 
     /// <inheritdoc/>
     public async Task OpenEditorAsync()
     {
         if (!_isReady)
             throw new InvalidOperationException("Cannot open editor: bridge is not ready.");
+        if (!_supportsEditor)
+            throw new InvalidOperationException(_editorAvailabilityDescription);
 
         ThrowIfDisposed();
 
@@ -503,7 +516,9 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
             _disposed = true;
         }
         _isReady = false;
+        _supportsEditor = false;
         _lastReadPos = -1;
+        _editorAvailabilityDescription = "VST3 plugin backend has been disposed.";
 
         // Enqueue shutdown command and complete channel
         _commandChannel.Writer.TryWrite(new MidiCommand { CommandKind = MidiCommand.Kind.Shutdown });
@@ -547,7 +562,9 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
     private async Task ResetForReloadAsync()
     {
         _isReady = false;
+        _supportsEditor = false;
         _lastReadPos = -1;
+        _editorAvailabilityDescription = "VST3 plugin is reloading.";
 
         // Stop the background writer task first
         _writerCts?.Cancel();
@@ -597,11 +614,13 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
             {
                 _state = BridgeState.Faulted;
                 _isReady = false;
+                _supportsEditor = false;
                 raised = true;
             }
         }
         if (raised)
         {
+            _editorAvailabilityDescription = reason;
             Debug.WriteLine($"[Vst3BridgeBackend] Faulted: {reason}");
             BridgeFaulted?.Invoke(this, new BridgeFaultedEventArgs(reason, ex));
         }
@@ -662,9 +681,11 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
         };
     }
 
-    private static bool ParseLoadAck(string? line, out string? errorMessage)
+    private static bool ParseLoadAck(string? line, out string? errorMessage, out bool supportsEditor, out string? editorDiagnostics)
     {
         errorMessage = null;
+        supportsEditor = false;
+        editorDiagnostics = null;
         if (line is null) return false;
         try
         {
@@ -676,6 +697,19 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
             var ackValue = ack.GetString();
             if (ackValue != "load" && ackValue != "load_ack")
                 return false;
+
+            if (root.TryGetProperty("supportsEditor", out var supportsEditorJson) &&
+                supportsEditorJson.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                supportsEditor = supportsEditorJson.GetBoolean();
+            }
+
+            if (root.TryGetProperty("editorDiagnostics", out var editorDiagnosticsJson) &&
+                editorDiagnosticsJson.ValueKind == JsonValueKind.String)
+            {
+                editorDiagnostics = editorDiagnosticsJson.GetString();
+            }
+
             if (!root.TryGetProperty("ok", out var ok) || !ok.GetBoolean())
             {
                 if (root.TryGetProperty("error", out var err))

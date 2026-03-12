@@ -154,7 +154,14 @@ public sealed partial class SettingsWindow : Window
             int loadingSlot = _loadingVst3SlotIndex;
             _loadingVst3SlotIndex = -1;
             if (loadingSlot >= 0)
-                SetVst3SlotStatus(loadingSlot, "✅ VST3 plugin loaded", showReload: false, enableEditor: true);
+            {
+                bool editorAvailable = _audioEngine.GetActiveBackend() is IEditorCapable capable && capable.SupportsEditor;
+                string statusText = "✅ VST3 plugin loaded";
+                if (_audioEngine.GetActiveBackend() is Vst3BridgeBackend vst3 && !editorAvailable)
+                    statusText = $"ℹ️ {vst3.EditorAvailabilityDescription}";
+
+                SetVst3SlotStatus(loadingSlot, statusText, showReload: false, enableEditor: editorAvailable);
+            }
         });
     }
 
@@ -620,10 +627,14 @@ public sealed partial class SettingsWindow : Window
                     }
                     else
                     {
+                        var message = backend is Vst3BridgeBackend vst3Backend
+                            ? vst3Backend.EditorAvailabilityDescription
+                            : "The current instrument does not support an editor window, or the VST3 plugin has not loaded successfully.";
+
                         var dialog = new ContentDialog
                         {
                             Title           = "Editor Not Available",
-                            Content         = "The current instrument does not support an editor window, or the VST3 plugin has not loaded successfully.",
+                            Content         = message,
                             CloseButtonText = "OK",
                             XamlRoot        = this.Content.XamlRoot,
                         };

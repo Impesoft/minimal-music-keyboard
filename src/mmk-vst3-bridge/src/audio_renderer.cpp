@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <vector>
 
 #include <Windows.h>
@@ -23,6 +25,89 @@ namespace
 {
     constexpr int kEventBusIndex = 0;
     constexpr int kEventChannel = 0;
+
+    std::string FormatTResult(Steinberg::tresult result)
+    {
+        switch (result)
+        {
+        case Steinberg::kResultOk:
+            return "kResultOk";
+        case Steinberg::kNoInterface:
+            return "kNoInterface";
+        case Steinberg::kResultFalse:
+            return "kResultFalse";
+        case Steinberg::kInvalidArgument:
+            return "kInvalidArgument";
+        case Steinberg::kNotImplemented:
+            return "kNotImplemented";
+        default:
+            {
+                std::ostringstream stream;
+                stream << "0x" << std::hex << std::uppercase << static_cast<std::uint32_t>(result);
+                return stream.str();
+            }
+        }
+    }
+
+    std::string FormatTuid(const Steinberg::TUID tuid)
+    {
+        std::ostringstream stream;
+        stream << std::hex << std::uppercase << std::setfill('0');
+        for (int i = 0; i < 16; ++i)
+        {
+            stream << std::setw(2) << static_cast<int>(static_cast<unsigned char>(tuid[i]));
+            if (i == 3 || i == 5 || i == 7 || i == 9)
+                stream << '-';
+        }
+
+        return stream.str();
+    }
+
+    std::string JoinDiagnostics(const std::vector<std::string>& diagnostics)
+    {
+        std::ostringstream stream;
+        for (std::size_t i = 0; i < diagnostics.size(); ++i)
+        {
+            if (i > 0)
+                stream << ' ';
+            stream << diagnostics[i];
+        }
+
+        return stream.str();
+    }
+
+    std::string FormatLastErrorMessage(DWORD error)
+    {
+        if (error == 0)
+            return "Win32 error 0";
+
+        wchar_t* buffer = nullptr;
+        const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+        const DWORD length = FormatMessageW(
+            flags,
+            nullptr,
+            error,
+            MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+            reinterpret_cast<LPWSTR>(&buffer),
+            0,
+            nullptr);
+
+        std::ostringstream stream;
+        stream << "Win32 error " << error;
+        if (length > 0 && buffer != nullptr)
+        {
+            std::wstring message(buffer, length);
+            while (!message.empty() && (message.back() == L'\r' || message.back() == L'\n'))
+                message.pop_back();
+
+            stream << " (" << std::string(message.begin(), message.end()) << ")";
+        }
+
+        if (buffer != nullptr)
+            LocalFree(buffer);
+
+        return stream.str();
+    }
 }
 
 AudioRenderer::~AudioRenderer()
@@ -41,6 +126,9 @@ bool AudioRenderer::Load(const std::string& pluginPath, const std::string& prese
 
     std::lock_guard<std::mutex> lock(pluginMutex_);
     ResetPluginState();
+    supportsEditor_ = false;
+    controllerSharesComponent_ = false;
+    editorDiagnostics_ = "Editor support not evaluated yet.";
 
     std::string loadError;
     module_ = VST3::Hosting::Module::create(pluginPath, loadError);
@@ -90,45 +178,106 @@ bool AudioRenderer::Load(const std::string& pluginPath, const std::string& prese
     // We try (1) first, then fall back to (2). Either way, controller_ may remain null
     // for plugins that genuinely have no GUI.
     {
+        std::vector<std::string> editorDiagnostics;
+        editorDiagnostics.emplace_back("Editor controller discovery:");
         Steinberg::Vst::IEditController* controllerRaw = nullptr;
-        if (component_->queryInterface(Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&controllerRaw)) == Steinberg::kResultOk)
+        const auto directQueryResult = component_->queryInterface(
+            Steinberg::Vst::IEditController::iid,
+            reinterpret_cast<void**>(&controllerRaw));
+        if (directQueryResult == Steinberg::kResultOk && controllerRaw != nullptr)
         {
             // Pattern 1: component IS the controller
             controller_ = Steinberg::owned(controllerRaw);
+            controllerSharesComponent_ = true;
+            editorDiagnostics.emplace_back("direct IEditController query succeeded.");
         }
         else
         {
+            editorDiagnostics.emplace_back(
+                "direct IEditController query failed (" + FormatTResult(directQueryResult) + ").");
+
             // Pattern 2: separate controller class
             Steinberg::TUID controllerCID{};
-            if (component_->getControllerClassId(controllerCID) == Steinberg::kResultOk)
+            const auto controllerClassResult = component_->getControllerClassId(controllerCID);
+            if (controllerClassResult == Steinberg::kResultOk)
             {
-                Steinberg::FUID controllerFUID = Steinberg::FUID::fromTUID(controllerCID);
-                if (controllerFUID.isValid())
+                editorDiagnostics.emplace_back(
+                    "controller class ID lookup succeeded (" + FormatTuid(controllerCID) + ").");
+
+                controllerRaw = nullptr;
+                const auto controllerCreateResult = factory.get()->createInstance(
+                    controllerCID,
+                    Steinberg::Vst::IEditController::iid,
+                    reinterpret_cast<void**>(&controllerRaw));
+
+                if (controllerCreateResult == Steinberg::kResultOk && controllerRaw != nullptr)
                 {
-                    controllerRaw = nullptr;
-                    factory.get()->createInstance(controllerCID, Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&controllerRaw));
-                    if (controllerRaw)
-                        controller_ = Steinberg::owned(controllerRaw);
+                    controller_ = Steinberg::owned(controllerRaw);
+                    controllerSharesComponent_ = false;
+                    editorDiagnostics.emplace_back("factory instantiated separate controller successfully.");
                 }
+                else
+                {
+                    editorDiagnostics.emplace_back(
+                        "factory createInstance for controller failed (" + FormatTResult(controllerCreateResult) + ").");
+                }
+            }
+            else
+            {
+                editorDiagnostics.emplace_back(
+                    "controller class ID lookup failed (" + FormatTResult(controllerClassResult) + ").");
             }
         }
 
         if (controller_)
         {
-            controller_->initialize(hostApp_);
+            if (controllerSharesComponent_)
+            {
+                supportsEditor_ = true;
+                editorDiagnostics.emplace_back("controller shares the component instance, so no second initialize() call was made.");
+            }
+            else
+            {
+                const auto controllerInitializeResult = controller_->initialize(hostApp_);
+                if (controllerInitializeResult != Steinberg::kResultOk)
+                {
+                    controller_ = nullptr;
+                    editorDiagnostics.emplace_back(
+                        "controller initialize() failed (" + FormatTResult(controllerInitializeResult) + ").");
+                }
+                else
+                {
+                    supportsEditor_ = true;
+                    editorDiagnostics.emplace_back("controller initialize() succeeded.");
+                }
+            }
 
             // Connect component and controller via IConnectionPoint if supported
-            Steinberg::Vst::IConnectionPoint* compCP = nullptr;
-            Steinberg::Vst::IConnectionPoint* ctrlCP = nullptr;
-            if (component_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&compCP)) == Steinberg::kResultOk &&
-                controller_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&ctrlCP)) == Steinberg::kResultOk)
+            if (supportsEditor_ && !controllerSharesComponent_)
             {
-                compCP->connect(ctrlCP);
-                ctrlCP->connect(compCP);
+                Steinberg::Vst::IConnectionPoint* compCP = nullptr;
+                Steinberg::Vst::IConnectionPoint* ctrlCP = nullptr;
+                if (component_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&compCP)) == Steinberg::kResultOk &&
+                    controller_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&ctrlCP)) == Steinberg::kResultOk)
+                {
+                    compCP->connect(ctrlCP);
+                    ctrlCP->connect(compCP);
+                    editorDiagnostics.emplace_back("component/controller connection points connected.");
+                }
+                else
+                {
+                    editorDiagnostics.emplace_back("component/controller connection points unavailable; continuing without connection.");
+                }
+
+                if (compCP) compCP->release();
+                if (ctrlCP) ctrlCP->release();
             }
-            if (compCP) compCP->release();
-            if (ctrlCP) ctrlCP->release();
         }
+
+        if (!supportsEditor_)
+            editorDiagnostics.emplace_back("editor GUI unavailable after controller discovery.");
+
+        editorDiagnostics_ = JoinDiagnostics(editorDiagnostics);
     }
 
     Steinberg::Vst::IAudioProcessor* processorRaw = nullptr;
@@ -220,11 +369,11 @@ void AudioRenderer::ResetPluginState()
     {
         Steinberg::Vst::IConnectionPoint* compCP = nullptr;
         Steinberg::Vst::IConnectionPoint* ctrlCP = nullptr;
-        bool hasCompCP = component_ && 
+        bool hasCompCP = component_ &&
             component_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&compCP)) == Steinberg::kResultOk;
-        bool hasCtrlCP = controller_ && 
+        bool hasCtrlCP = !controllerSharesComponent_ && controller_ &&
             controller_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&ctrlCP)) == Steinberg::kResultOk;
-        
+
         if (hasCompCP && hasCtrlCP)
         {
             if (compCP) compCP->disconnect(ctrlCP);
@@ -242,13 +391,16 @@ void AudioRenderer::ResetPluginState()
 
     if (controller_)
     {
-        controller_->terminate();
+        if (!controllerSharesComponent_)
+            controller_->terminate();
     }
 
     processor_ = nullptr;
     controller_ = nullptr;
     component_ = nullptr;
     hostApp_ = nullptr;
+    controllerSharesComponent_ = false;
+    supportsEditor_ = false;
     module_.reset();
 
     {
@@ -452,7 +604,7 @@ bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
 {
     if (!controller_)
     {
-        errorMessage = "No IEditController — plugin does not support GUI.";
+        errorMessage = editorDiagnostics_;
         return false;
     }
 
@@ -466,22 +618,23 @@ bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
     Steinberg::IPlugView* viewRaw = controller_->createView(Steinberg::Vst::ViewType::kEditor);
     if (!viewRaw)
     {
-        errorMessage = "Plugin returned null for createView(kEditor). No GUI available.";
+        errorMessage = "Editor open failed at createView(kEditor): plugin returned null. " + editorDiagnostics_;
         return false;
     }
     plugView_ = Steinberg::owned(viewRaw);
 
     // Check platform support
-    if (plugView_->isPlatformTypeSupported(Steinberg::kPlatformTypeHWND) != Steinberg::kResultOk)
+    const auto platformSupportResult = plugView_->isPlatformTypeSupported(Steinberg::kPlatformTypeHWND);
+    if (platformSupportResult != Steinberg::kResultOk)
     {
         plugView_ = nullptr;
-        errorMessage = "Plugin does not support HWND-based GUI.";
+        errorMessage = "Editor open failed at isPlatformTypeSupported(HWND): " + FormatTResult(platformSupportResult) + ".";
         return false;
     }
 
     // Get preferred size
     Steinberg::ViewRect rect{};
-    plugView_->getSize(&rect);
+    const auto getSizeResult = plugView_->getSize(&rect);
     int w = rect.getWidth();
     int h = rect.getHeight();
     if (w <= 0) w = 800;
@@ -521,7 +674,7 @@ bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
 
         if (!hwnd)
         {
-            readyPromise->set_value({ false, "Failed to create Win32 host window." });
+            readyPromise->set_value({ false, "Editor open failed at CreateWindowExW: " + FormatLastErrorMessage(GetLastError()) + "." });
             return;
         }
 
@@ -538,9 +691,10 @@ bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
             if (msg.message == WM_APP + 1 && msg.hwnd == hwnd)
             {
                 // Pump is running — now call attached()
-                if (plugView_->attached(reinterpret_cast<void*>(hwnd), Steinberg::kPlatformTypeHWND) != Steinberg::kResultOk)
+                const auto attachedResult = plugView_->attached(reinterpret_cast<void*>(hwnd), Steinberg::kPlatformTypeHWND);
+                if (attachedResult != Steinberg::kResultOk)
                 {
-                    readyPromise->set_value({ false, "IPlugView::attached() failed." });
+                    readyPromise->set_value({ false, "Editor open failed at IPlugView::attached(HWND): " + FormatTResult(attachedResult) + "." });
                     PostMessageW(hwnd, WM_QUIT, 0, 0);
                     continue;
                 }
@@ -580,7 +734,7 @@ bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
         if (editorThread_.joinable()) editorThread_.detach();
         plugView_ = nullptr;
         editorHwnd_ = nullptr;
-        errorMessage = "Timed out waiting for editor window (plugin attached() may be blocking).";
+        errorMessage = "Editor open timed out while waiting for IPlugView::attached(HWND) to finish.";
         return false;
     }
 
@@ -594,6 +748,16 @@ bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
     }
 
     return true;
+}
+
+bool AudioRenderer::SupportsEditor() const
+{
+    return supportsEditor_;
+}
+
+const std::string& AudioRenderer::GetEditorDiagnostics() const
+{
+    return editorDiagnostics_;
 }
 
 void AudioRenderer::CloseEditor()

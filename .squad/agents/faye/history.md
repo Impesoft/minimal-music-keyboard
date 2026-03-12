@@ -27,6 +27,28 @@
 
 <!-- append new learnings below -->
 
+### Cumulative VST3 Bridge Summary (2026-03-01 through 2026-03-12)
+
+**Overview:** Faye implemented and debugged native VST3 plugin hosting via C++ bridge (mmk-vst3-bridge) with managed C# backend and Win32 GUI integration.
+
+**Major milestones:**
+1. **Phase 3 (2026-03-11):** Project scaffolding with CMake, vcpkg, IPC (named pipes), shared memory, audio render thread
+2. **Phase 3b (2026-03-12):** VST3 SDK integration — plugin loading, MIDI event list, stereo output rendering  
+3. **Bug fixes (2026-03-19):** Fixed 4 critical audio/spec issues (sample rate, IHostApplication, IEditController, MIDI event type)
+4. **Lifetime handling (2026-03-19):** Dangling pointers, IConnectionPoint cleanup, single-object COM handling
+5. **Bus activation (2026-03-19):** Added mandatory activateBus calls before setActive; GUI thread with message pump
+6. **Race conditions (2026-03-12):** Deferred backend activation until LoadAsync completes
+7. **Diagnostics (2026-03-12):** Stage-specific editor error reporting for OB-Xd troubleshooting
+
+**Critical patterns learned:**
+- VST3 plugin load sequence: Module → queryInterface(IComponent) → activate buses → setActive → initialize → setupProcessing
+- Editor bring-up: Query IEditController → createView(kEditor) → attach to HWND → message loop
+- Single-object plugins: IComponent and IEditController may be the same COM object; detect via queryInterface and skip duplicate init/cleanup
+- Host responsibilities: IHostApplication required by spec, IConnectionPoint disconnect before terminate, proper teardown order
+- Thread model: Audio render on bridge thread, editor on dedicated Win32 message loop thread, avoid blocking IPC loop
+
+**Build status:** ✅ C# solution clean (0 errors), C++ bridge builds successfully (x64 Release)
+
 ### VST3 Lifetime Crash Fixes (2026-03-19)
 
 **Files modified:**

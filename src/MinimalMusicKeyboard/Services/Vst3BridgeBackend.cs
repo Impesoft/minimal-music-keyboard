@@ -34,7 +34,7 @@ namespace MinimalMusicKeyboard.Services;
 /// <see cref="Read"/> is also called on the audio render thread and copies from shared memory into
 /// the output buffer without allocating.</para>
 /// </summary>
-public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
+public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISampleProvider
 {
     // ── Bridge state machine ──────────────────────────────────────────────────
 
@@ -59,7 +59,7 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
 
     private readonly struct MidiCommand
     {
-        public enum Kind : byte { NoteOn, NoteOff, NoteOffAll, SetProgram, Load, Shutdown }
+        public enum Kind : byte { NoteOn, NoteOff, NoteOffAll, SetProgram, Load, Shutdown, OpenEditor, CloseEditor }
         public Kind CommandKind { get; init; }
         public int Channel { get; init; }
         public int Pitch { get; init; }
@@ -378,6 +378,87 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
         });
     }
 
+    // ── IEditorCapable ────────────────────────────────────────────────────────
+
+    /// <inheritdoc/>
+    public bool SupportsEditor => _isReady;
+
+    /// <inheritdoc/>
+    public async Task OpenEditorAsync()
+    {
+        if (!_isReady)
+            throw new InvalidOperationException("Cannot open editor: bridge is not ready.");
+
+        ThrowIfDisposed();
+
+        try
+        {
+            var openCmd = new MidiCommand { CommandKind = MidiCommand.Kind.OpenEditor };
+            var json = SerializeCommand(openCmd);
+
+            if (_pipeWriter is not { } writer)
+                throw new InvalidOperationException("Pipe writer is not available.");
+
+            await writer.WriteLineAsync(json.AsMemory()).ConfigureAwait(false);
+            await writer.FlushAsync().ConfigureAwait(false);
+
+            // Await editor_opened ACK (5 second timeout)
+            using var ackCts = new CancellationTokenSource();
+            ackCts.CancelAfter(TimeSpan.FromSeconds(5));
+
+            if (_pipeReader is not { } reader)
+                throw new InvalidOperationException("Pipe reader is not available.");
+
+            var ackLine = await reader.ReadLineAsync(ackCts.Token).ConfigureAwait(false);
+            if (!ParseEditorAck(ackLine, "editor_opened"))
+                throw new InvalidOperationException($"Bridge rejected openEditor command: {ackLine ?? "<no response>"}");
+
+            Debug.WriteLine("[Vst3BridgeBackend] Editor opened successfully.");
+        }
+        catch (OperationCanceledException)
+        {
+            throw new TimeoutException("Timed out waiting for editor_opened ACK.");
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task CloseEditorAsync()
+    {
+        if (!_isReady)
+            throw new InvalidOperationException("Cannot close editor: bridge is not ready.");
+
+        ThrowIfDisposed();
+
+        try
+        {
+            var closeCmd = new MidiCommand { CommandKind = MidiCommand.Kind.CloseEditor };
+            var json = SerializeCommand(closeCmd);
+
+            if (_pipeWriter is not { } writer)
+                throw new InvalidOperationException("Pipe writer is not available.");
+
+            await writer.WriteLineAsync(json.AsMemory()).ConfigureAwait(false);
+            await writer.FlushAsync().ConfigureAwait(false);
+
+            // Await editor_closed ACK (5 second timeout)
+            using var ackCts = new CancellationTokenSource();
+            ackCts.CancelAfter(TimeSpan.FromSeconds(5));
+
+            if (_pipeReader is not { } reader)
+                throw new InvalidOperationException("Pipe reader is not available.");
+
+            var ackLine = await reader.ReadLineAsync(ackCts.Token).ConfigureAwait(false);
+            if (!ParseEditorAck(ackLine, "editor_closed"))
+                throw new InvalidOperationException($"Bridge rejected closeEditor command: {ackLine ?? "<no response>"}");
+
+            Debug.WriteLine("[Vst3BridgeBackend] Editor closed successfully.");
+        }
+        catch (OperationCanceledException)
+        {
+            throw new TimeoutException("Timed out waiting for editor_closed ACK.");
+        }
+    }
+
     // ── Dispose ───────────────────────────────────────────────────────────────
 
     /// <inheritdoc/>
@@ -495,6 +576,8 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
             MidiCommand.Kind.SetProgram => $"{{\"cmd\":\"setProgram\",\"program\":{cmd.Program}}}",
             MidiCommand.Kind.Load => $"{{\"cmd\":\"load\",\"path\":{JsonSerializer.Serialize(cmd.Path)},\"preset\":{JsonSerializer.Serialize(cmd.Preset)}}}",
             MidiCommand.Kind.Shutdown => "{\"cmd\":\"shutdown\"}",
+            MidiCommand.Kind.OpenEditor => "{\"cmd\":\"openEditor\"}",
+            MidiCommand.Kind.CloseEditor => "{\"cmd\":\"closeEditor\"}",
             _ => throw new ArgumentOutOfRangeException()
         };
     }
@@ -520,6 +603,26 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
                 return false;
             }
             return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool ParseEditorAck(string? response, string expectedAck)
+    {
+        if (string.IsNullOrWhiteSpace(response))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(response);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("ack", out var ack))
+                return false;
+
+            return ack.GetString() == expectedAck;
         }
         catch
         {

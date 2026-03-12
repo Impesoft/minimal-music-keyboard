@@ -7,6 +7,7 @@ using MinimalMusicKeyboard.Services;
 using NAudio.Midi;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -353,10 +354,21 @@ public sealed partial class SettingsWindow : Window
                 Margin = new Thickness(4, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
             };
+            var vst3EditorBtn = new Button
+            {
+                Content = "Editor",
+                FontSize = 11,
+                Padding = new Thickness(8, 2, 8, 2),
+                Margin = new Thickness(4, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
             Grid.SetColumn(vst3PresetLabel, 0);
+            vst3PresetRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             Grid.SetColumn(vst3PresetBtn, 1);
+            Grid.SetColumn(vst3EditorBtn, 2);
             vst3PresetRow.Children.Add(vst3PresetLabel);
             vst3PresetRow.Children.Add(vst3PresetBtn);
+            vst3PresetRow.Children.Add(vst3EditorBtn);
             cardContent.Children.Add(vst3PresetRow);
 
             // Wire up event handlers
@@ -455,6 +467,42 @@ public sealed partial class SettingsWindow : Window
                     _catalog.AddOrUpdateInstrument(updated);
                     vst3PresetLabel.Text = Path.GetFileName(path);
                     ToolTipService.SetToolTip(vst3PresetLabel, path);
+                }
+            };
+
+            vst3EditorBtn.Click += async (_, _) =>
+            {
+                try
+                {
+                    var backend = _audioEngine.GetActiveBackend();
+                    if (backend is IEditorCapable capable && capable.SupportsEditor)
+                    {
+                        await capable.OpenEditorAsync();
+                    }
+                    else
+                    {
+                        // Show a simple message that editor is not available
+                        var dialog = new ContentDialog
+                        {
+                            Title = "Editor Not Available",
+                            Content = "The current instrument does not support an editor window, or the VST3 plugin is not loaded.",
+                            CloseButtonText = "OK",
+                            XamlRoot = this.Content.XamlRoot
+                        };
+                        await dialog.ShowAsync();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[SettingsWindow] Failed to open VST3 editor: {ex.Message}");
+                    var dialog = new ContentDialog
+                    {
+                        Title = "Error",
+                        Content = $"Failed to open editor: {ex.Message}",
+                        CloseButtonText = "OK",
+                        XamlRoot = this.Content.XamlRoot
+                    };
+                    await dialog.ShowAsync();
                 }
             };
 

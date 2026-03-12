@@ -50,4 +50,10 @@ public interface IAudioEngine : IDisposable
     /// The in-flight synthesizer is preserved; only the output endpoint changes.
     /// </summary>
     void ChangeOutputDevice(string? deviceId);
+
+    /// <summary>
+    /// Get the currently active instrument backend (SoundFontBackend or Vst3BridgeBackend).
+    /// Returns null if no backend is active.
+    /// </summary>
+    IInstrumentBackend? GetActiveBackend();
 }

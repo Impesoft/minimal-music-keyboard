@@ -232,3 +232,31 @@
 ### Build Status
 ✅ C# builds successfully (0 errors, 2 pre-existing warnings)
 ⏳ C++ bridge build deferred (VST3 SDK setup required)
+
+### VST3 Bus Activation + GUI Hosting (2026-03-19)
+
+**Files modified:**
+- `src/mmk-vst3-bridge/src/audio_renderer.h` — Added `OpenEditor()`, `CloseEditor()`, `EditorMessageLoop()` methods; added `plugView_`, `editorThread_`, `editorHwnd_`, `editorOpen_` members; included `ivsteditcontroller.h`, `iplugview.h`, and `Windows.h`
+- `src/mmk-vst3-bridge/src/audio_renderer.cpp` — Fixed critical bus activation bug in `Load()`; corrected `processData.numSamples`; implemented full Win32 GUI hosting with separate message loop thread
+- `src/mmk-vst3-bridge/src/bridge.cpp` — Added `openEditor` and `closeEditor` command handlers with JSON ack responses
+
+**Critical bug fixed (Sub-task A):**
+- **VST3 bus activation missing:** VST3 spec requires calling `component_->activateBus()` for each bus BEFORE calling `component_->setActive(true)`. Without activating the event input bus, most plugins silently ignore MIDI note events.
+- **Fix:** Added `component_->activateBus(kAudio, kOutput, 0, true)` and `component_->activateBus(kEvent, kInput, 0, true)` after `setupProcessing()` and before `setActive(true)`.
+- **Secondary fix:** Changed `processData.numSamples` from hardcoded `kMaxBlockSize` to dynamic `frameSize` parameter, ensuring the plugin renders exactly the requested number of samples per process call.
+
+**GUI hosting implementation (Sub-task B):**
+- `OpenEditor()`: Queries `IEditController::createView(kEditor)`, validates HWND platform support, creates a Win32 window (`WS_OVERLAPPEDWINDOW | WS_VISIBLE`), attaches the plugin view, and starts a dedicated message loop thread
+- `CloseEditor()`: Posts `WM_QUIT` to wake the message loop, joins the thread, calls `IPlugView::removed()`, and destroys the window
+- `EditorMessageLoop()`: Runs standard Win32 message pump (`GetMessageW` → `TranslateMessage` → `DispatchMessageW`) while `editorOpen_` is true
+- Window class registration is idempotent (class `MmkVst3Editor` is registered once, subsequent calls fail gracefully with `ERROR_CLASS_ALREADY_EXISTS`)
+- Editor thread is separate from the audio render thread to avoid blocking the bridge's IPC command loop
+- `ResetPluginState()` now calls `CloseEditor()` first to ensure clean teardown before plugin termination
+
+**VST3 patterns learned:**
+- Bus activation is mandatory: Even if a plugin doesn't use event input or audio output, the host must explicitly activate each bus via `activateBus()` before calling `setActive(true)`. Some plugins fail silently without this.
+- GUI hosting thread model: `IPlugView` requires a Win32 message pump running on the thread that called `attached()`. Using a dedicated thread keeps the bridge responsive while the plugin GUI is open.
+- Window lifetime: Always call `IPlugView::removed()` BEFORE releasing the `IPlugView` pointer or destroying the HWND, otherwise some plugins crash on cleanup.
+- Message loop cleanup: Use `PostMessageW(hwnd, WM_QUIT, 0, 0)` to gracefully exit `GetMessageW()` loop, then join the thread to ensure it completes before destroying resources.
+
+**Status:** Code complete. C++ build deferred pending VST3 SDK setup.

@@ -45,3 +45,19 @@ public interface IInstrumentBackend : IDisposable
     /// <summary>MIDI program/bank change within this backend's domain.</summary>
     void SetProgram(int channel, int bank, int program);
 }
+
+/// <summary>
+/// Optional interface for backends that support opening a plugin editor GUI.
+/// Implement alongside IInstrumentBackend when the backend has a visual editor.
+/// </summary>
+public interface IEditorCapable
+{
+    /// <summary>True if this backend's plugin has an editor GUI.</summary>
+    bool SupportsEditor { get; }
+
+    /// <summary>Opens the plugin's editor window.</summary>
+    Task OpenEditorAsync();
+
+    /// <summary>Closes the plugin's editor window.</summary>
+    Task CloseEditorAsync();
+}

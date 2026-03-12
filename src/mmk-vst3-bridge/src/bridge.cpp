@@ -104,6 +104,29 @@ void Bridge::HandleCommand(const std::string& line)
         return;
     }
 
+    if (cmd == "openEditor")
+    {
+        std::string error;
+        // Pass 0 (null) as parent HWND — bridge has no parent window
+        const bool ok = renderer_.OpenEditor(nullptr, error);
+        nlohmann::json ack;
+        ack["ack"] = "editor_opened";
+        ack["ok"] = ok;
+        if (!ok) ack["error"] = error;
+        ipc_.WriteLine(ack.dump());
+        return;
+    }
+
+    if (cmd == "closeEditor")
+    {
+        renderer_.CloseEditor();
+        nlohmann::json ack;
+        ack["ack"] = "editor_closed";
+        ack["ok"] = true;
+        ipc_.WriteLine(ack.dump());
+        return;
+    }
+
     if (cmd == "shutdown")
     {
         shutdownRequested_ = true;

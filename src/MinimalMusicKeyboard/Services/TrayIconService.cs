@@ -2,7 +2,9 @@ using H.NotifyIcon;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using System;
 using System.Diagnostics;
+using System.IO;
 using System.Windows.Input;
 
 namespace MinimalMusicKeyboard.Services;
@@ -45,10 +47,8 @@ public sealed class TrayIconService : IDisposable
         {
             ToolTipText = "Minimal Music Keyboard",
             ContextMenuMode = ContextMenuMode.PopupMenu,
-            // H.NotifyIcon.WinUI 2.2+ uses ICommand for tray interactions.
             DoubleClickCommand = new RelayCommand(OnDoubleClick),
-            // GeneratedIconSource renders a Unicode character as the tray icon entirely
-            // in memory — no file loading, works correctly in unpackaged apps.
+            // Placeholder icon — replaced with the real .ico below via UpdateIcon().
             IconSource = new GeneratedIconSource
             {
                 Text       = "🎹",
@@ -59,13 +59,42 @@ public sealed class TrayIconService : IDisposable
 
         _taskbarIcon.ContextFlyout = BuildContextMenu();
 
-        // Fix: H.NotifyIcon.WinUI v2.x requires ForceCreate() when the icon is created
-        // programmatically (not from XAML). Without this the icon is not registered with
-        // the Windows shell and will not appear in the notification area.
-        // Pass false to disable "Efficiency Mode" (hidden state) — we want the icon visible.
+        // ForceCreate() is required when the TaskbarIcon is created in code (not XAML).
         _taskbarIcon.ForceCreate(false);
 
+        // Replace the placeholder emoji with the real piano-key .ico file.
+        // TaskbarIcon.UpdateIcon(System.Drawing.Icon) updates the Shell NOTIFYICONDATA
+        // directly — this is the correct way to load a file-based icon in H.NotifyIcon 2.x.
+        TryApplyIcoIcon(_taskbarIcon);
+
         Debug.WriteLine("[TrayIconService] Tray icon initialized.");
+    }
+
+    // -------------------------------------------------------------------------
+    // Icon loading
+    // -------------------------------------------------------------------------
+
+    private static void TryApplyIcoIcon(TaskbarIcon taskbarIcon)
+    {
+        try
+        {
+            var icoPath = Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");
+            if (!File.Exists(icoPath))
+            {
+                Debug.WriteLine($"[TrayIconService] AppIcon.ico not found at: {icoPath} — keeping emoji.");
+                return;
+            }
+
+            // System.Drawing.Icon loads the .ico file and picks the best-fit size.
+            // TaskbarIcon.UpdateIcon() pushes the HICON directly to Shell_NotifyIcon.
+            using var icon = new System.Drawing.Icon(icoPath, 16, 16);
+            taskbarIcon.UpdateIcon(icon);
+            Debug.WriteLine("[TrayIconService] Tray icon set from AppIcon.ico.");
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[TrayIconService] Failed to load AppIcon.ico: {ex.Message}");
+        }
     }
 
     // -------------------------------------------------------------------------

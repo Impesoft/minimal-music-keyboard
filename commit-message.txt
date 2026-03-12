@@ -1,6 +1,0 @@
-docs: add VST3 architecture review by Gren
-
-APPROVED WITH CONDITIONS — 2 blocking issues require proposal revision
-before Phase 1 implementation.
-
-Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>

@@ -336,3 +336,34 @@ Added `<remarks>Called from the audio thread only. Do not call from the MIDI cal
 4. Test MIDI program change routing
 5. Test plugins requiring IHostApplication (NI, Arturia)
 6. Verify no regression in SF2 backend
+
+### Session: Tray Icon + VST3 Editor Support (2026-03-12)
+
+**Context:** Ward requested two enhancements: (1) Use AppIcon.ico for tray icon instead of emoji, (2) Add UI to open VST3 plugin editors.
+
+**Task 1 — Tray Icon with .ico File:**
+**Investigation:** H.NotifyIcon.WinUI 2.x (the library used for tray integration) does not expose a file-based IconSource type. The library only provides `GeneratedIconSource` (renders text/emoji in memory) and does not have `BitmapIconSource` or a way to load .ico files directly. To use AppIcon.ico, we would need P/Invoke (`LoadImage` from user32.dll) and access to `TaskbarIcon`'s internal HWND — both non-trivial and require wrapping Win32 NOTIFYICONDATA directly.
+
+**Decision:** Keep `GeneratedIconSource` with emoji for now. Added detailed code comment in `TrayIconService.cs` explaining the limitation and future improvement path. The emoji renders acceptably on modern Windows 11 systems.
+
+**Task 2 — VST3 Editor Support (C# Side IPC):**
+**Implementation:**
+1. Added `IEditorCapable` interface to `IInstrumentBackend.cs` with `SupportsEditor`, `OpenEditorAsync()`, `CloseEditorAsync()`
+2. Updated `Vst3BridgeBackend` to implement `IEditorCapable`:
+   - Added `OpenEditor` and `CloseEditor` to `MidiCommand.Kind` enum
+   - Implemented `SupportsEditor` property (returns `_isReady`)
+   - Implemented `OpenEditorAsync()` that sends `{"cmd":"openEditor"}` and awaits `editor_opened` ACK (5s timeout)
+   - Implemented `CloseEditorAsync()` that sends `{"cmd":"closeEditor"}` and awaits `editor_closed` ACK (5s timeout)
+   - Added `ParseEditorAck()` helper method for ACK validation
+   - Updated `SerializeCommand()` to handle new command types
+3. Added `GetActiveBackend()` method to `IAudioEngine` / `AudioEngine` to expose current backend for UI access
+4. Updated `SettingsWindow.xaml.cs` to add "Editor" button in VST3 preset row:
+   - Added `vst3EditorBtn` button in the VST3 preset row (Column 2)
+   - Click handler checks if active backend is `IEditorCapable` and calls `OpenEditorAsync()`
+   - Shows error dialog if editor not available or fails to open
+   - Added `System.Diagnostics` using for Debug logging
+
+**Coordination with Faye:** Faye is implementing the C++ bridge side (`openEditor`/`closeEditor` commands that return `editor_opened`/`editor_closed` ACKs). C# side is complete and ready for integration once bridge supports editor hosting.
+
+**Build:** All changes compiled successfully with no errors. One warning about unused `_frameSize` field in Vst3BridgeBackend (pre-existing, not introduced by this session).
+

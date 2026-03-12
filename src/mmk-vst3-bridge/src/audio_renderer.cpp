@@ -6,6 +6,8 @@
 #include <iostream>
 #include <vector>
 
+#include <Windows.h>
+
 #include "host_application.h"
 #include <pluginterfaces/base/ipluginbase.h>
 #include <pluginterfaces/vst/ivstmidicontrollers.h>
@@ -123,6 +125,11 @@ bool AudioRenderer::Load(const std::string& pluginPath, const std::string& prese
         return false;
     }
 
+    // Activate buses before calling setActive(true) per VST3 spec
+    // Return values: kResultOk or kNotImplemented are both acceptable
+    component_->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput, 0, true);
+    component_->activateBus(Steinberg::Vst::kEvent, Steinberg::Vst::kInput, 0, true);
+
     if (component_->setActive(true) != Steinberg::kResultOk)
     {
         errorMessage = "Failed to activate VST3 component.";
@@ -168,6 +175,8 @@ void AudioRenderer::Unload()
 
 void AudioRenderer::ResetPluginState()
 {
+    CloseEditor(); // close editor before teardown
+
     if (processor_)
     {
         processor_->setProcessing(false);
@@ -389,7 +398,7 @@ void AudioRenderer::FillBuffer(float* output, int frameSize)
     Steinberg::Vst::ProcessData processData{};
     processData.processMode = Steinberg::Vst::kRealtime;
     processData.symbolicSampleSize = Steinberg::Vst::kSample32;
-    processData.numSamples = kMaxBlockSize;
+    processData.numSamples = frameSize;
     processData.numInputs = 0;
     processData.numOutputs = 1;
     processData.outputs = &outputBus;
@@ -407,5 +416,124 @@ void AudioRenderer::FillBuffer(float* output, int frameSize)
     {
         output[(i * 2)] = left[static_cast<std::size_t>(i)];
         output[(i * 2) + 1] = right[static_cast<std::size_t>(i)];
+    }
+}
+
+bool AudioRenderer::OpenEditor(HWND parentHwnd, std::string& errorMessage)
+{
+    if (!controller_)
+    {
+        errorMessage = "No IEditController — plugin does not support GUI.";
+        return false;
+    }
+
+    if (editorOpen_.load())
+    {
+        // Already open — bring to front
+        if (editorHwnd_) SetForegroundWindow(editorHwnd_);
+        return true;
+    }
+
+    Steinberg::IPlugView* viewRaw = controller_->createView(Steinberg::Vst::ViewType::kEditor);
+    if (!viewRaw)
+    {
+        errorMessage = "Plugin returned null for createView(kEditor). No GUI available.";
+        return false;
+    }
+    plugView_ = Steinberg::owned(viewRaw);
+
+    // Check platform support
+    if (plugView_->isPlatformTypeSupported(Steinberg::kPlatformTypeHWND) != Steinberg::kResultOk)
+    {
+        plugView_ = nullptr;
+        errorMessage = "Plugin does not support HWND-based GUI.";
+        return false;
+    }
+
+    // Get preferred size
+    Steinberg::ViewRect rect{};
+    plugView_->getSize(&rect);
+    int w = rect.getWidth();
+    int h = rect.getHeight();
+    if (w <= 0) w = 800;
+    if (h <= 0) h = 600;
+
+    // Create a dedicated Win32 window to host the plugin view
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = DefWindowProcW;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"MmkVst3Editor";
+    RegisterClassExW(&wc); // idempotent — ok if already registered
+
+    HWND hwnd = CreateWindowExW(
+        0, L"MmkVst3Editor", L"VST3 Editor",
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        CW_USEDEFAULT, CW_USEDEFAULT, w, h,
+        parentHwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+
+    if (!hwnd)
+    {
+        plugView_ = nullptr;
+        errorMessage = "Failed to create Win32 host window.";
+        return false;
+    }
+
+    editorHwnd_ = hwnd;
+
+    if (plugView_->attached(reinterpret_cast<void*>(hwnd), Steinberg::kPlatformTypeHWND) != Steinberg::kResultOk)
+    {
+        DestroyWindow(hwnd);
+        editorHwnd_ = nullptr;
+        plugView_ = nullptr;
+        errorMessage = "IPlugView::attached() failed.";
+        return false;
+    }
+
+    editorOpen_ = true;
+
+    // Run message pump on a separate thread so the bridge command loop stays responsive
+    editorThread_ = std::thread(&AudioRenderer::EditorMessageLoop, this, hwnd);
+
+    return true;
+}
+
+void AudioRenderer::CloseEditor()
+{
+    if (!editorOpen_.load())
+        return;
+
+    editorOpen_ = false;
+
+    if (editorHwnd_)
+    {
+        PostMessageW(editorHwnd_, WM_QUIT, 0, 0); // wake up message loop
+    }
+
+    if (editorThread_.joinable())
+        editorThread_.join();
+
+    if (plugView_)
+    {
+        plugView_->removed();
+        plugView_ = nullptr;
+    }
+
+    if (editorHwnd_)
+    {
+        DestroyWindow(editorHwnd_);
+        editorHwnd_ = nullptr;
+    }
+}
+
+void AudioRenderer::EditorMessageLoop(HWND editorHwnd)
+{
+    MSG msg{};
+    while (editorOpen_.load())
+    {
+        if (GetMessageW(&msg, nullptr, 0, 0) <= 0)
+            break;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
     }
 }

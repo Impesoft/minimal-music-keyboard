@@ -289,6 +289,10 @@ public sealed class AudioEngine : IAudioEngine
         }
     }
 
+    /// <inheritdoc/>
+    public IInstrumentBackend? GetActiveBackend()
+        => Volatile.Read(ref _activeBackend);
+
     // ── Disposal ───────────────────────────────────────────────────────────────
 
     public void Dispose()

@@ -33,7 +33,7 @@ public sealed partial class SettingsWindow : Window
         int SlotIndex,
         Button SlotBadge,
         TextBlock SlotLabel,
-        StackPanel Sf2Panel,
+        Panel Sf2Panel,
         StackPanel Vst3Panel,
         ComboBox InstrumentCombo,
         TextBlock Sf2Label,
@@ -273,12 +273,16 @@ public sealed partial class SettingsWindow : Window
             };
             cardContent.Children.Add(separator);
 
-            // SF2 panel: Instrument combo + SF2 path + browse
-            var sf2Panel = new StackPanel { Spacing = 4, Margin = new Thickness(28, 0, 0, 0) };
+            // SF2 panel: Instrument combo + Browse on one line
+            var sf2Panel = new Grid { Margin = new Thickness(28, 0, 0, 0) };
+            sf2Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            sf2Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
             var combo = new ComboBox
             {
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 FontSize = 12,
+                MinWidth = 120,
             };
             combo.Items.Add("(none)");
             foreach (var inst in catalogItems)
@@ -298,41 +302,31 @@ public sealed partial class SettingsWindow : Window
             }
             combo.SelectedIndex = initialIdx;
 
-            var sf2PathGrid = new Grid();
-            sf2PathGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            sf2PathGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-            var sf2Label = new TextBlock
-            {
-                Text = GetSf2TextForSlot(slotInstrument),
-                FontSize = 11,
-                Opacity = 0.6,
-                VerticalAlignment = VerticalAlignment.Center,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-                Margin = new Thickness(0, 0, 4, 0),
-            };
+            // sf2Label is kept as a data-holding TextBlock (never added to visual tree);
+            // its .Text drives the tooltip on sf2Btn.
+            var sf2Label = new TextBlock { Text = GetSf2TextForSlot(slotInstrument) };
             var sf2Btn = new Button
             {
                 Content = "Browse…",
                 FontSize = 11,
-                Padding = new Thickness(4, 2, 4, 2),
+                Padding = new Thickness(8, 2, 8, 2),
+                Margin = new Thickness(4, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
             };
-            Grid.SetColumn(sf2Label, 0);
-            Grid.SetColumn(sf2Btn, 1);
-            sf2PathGrid.Children.Add(sf2Label);
-            sf2PathGrid.Children.Add(sf2Btn);
+            ToolTipService.SetToolTip(sf2Btn, sf2Label.Text);
 
+            Grid.SetColumn(combo, 0);
+            Grid.SetColumn(sf2Btn, 1);
             sf2Panel.Children.Add(combo);
-            sf2Panel.Children.Add(sf2PathGrid);
+            sf2Panel.Children.Add(sf2Btn);
             sf2Panel.Visibility = slotInstrument?.Type != InstrumentType.Vst3 ? Visibility.Visible : Visibility.Collapsed;
 
-            // VST3 panel: Plugin path + browse, Preset path + browse
+            // VST3 panel: Plugin row + Preset row (each [* path label] [button])
             var vst3Panel = new StackPanel { Spacing = 4, Margin = new Thickness(28, 0, 0, 0) };
 
-            var vst3PluginGrid = new Grid();
-            vst3PluginGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            vst3PluginGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var vst3PluginRow = new Grid();
+            vst3PluginRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            vst3PluginRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var vst3PluginLabel = new TextBlock
             {
                 Text = GetVst3PluginTextForSlot(slotInstrument),
@@ -344,19 +338,20 @@ public sealed partial class SettingsWindow : Window
             };
             var vst3PluginBtn = new Button
             {
-                Content = "Browse…",
+                Content = "Plugin…",
                 FontSize = 11,
-                Padding = new Thickness(4, 2, 4, 2),
+                Padding = new Thickness(8, 2, 8, 2),
+                Margin = new Thickness(4, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
             };
             Grid.SetColumn(vst3PluginLabel, 0);
             Grid.SetColumn(vst3PluginBtn, 1);
-            vst3PluginGrid.Children.Add(vst3PluginLabel);
-            vst3PluginGrid.Children.Add(vst3PluginBtn);
+            vst3PluginRow.Children.Add(vst3PluginLabel);
+            vst3PluginRow.Children.Add(vst3PluginBtn);
 
-            var vst3PresetGrid = new Grid { Margin = new Thickness(0, 2, 0, 0) };
-            vst3PresetGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            vst3PresetGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var vst3PresetRow = new Grid();
+            vst3PresetRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            vst3PresetRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var vst3PresetLabel = new TextBlock
             {
                 Text = GetVst3PresetTextForSlot(slotInstrument),
@@ -368,20 +363,19 @@ public sealed partial class SettingsWindow : Window
             };
             var vst3PresetBtn = new Button
             {
-                Content = "Browse…",
+                Content = "Preset…",
                 FontSize = 11,
-                Padding = new Thickness(4, 2, 4, 2),
+                Padding = new Thickness(8, 2, 8, 2),
+                Margin = new Thickness(4, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
             };
             Grid.SetColumn(vst3PresetLabel, 0);
             Grid.SetColumn(vst3PresetBtn, 1);
-            vst3PresetGrid.Children.Add(vst3PresetLabel);
-            vst3PresetGrid.Children.Add(vst3PresetBtn);
+            vst3PresetRow.Children.Add(vst3PresetLabel);
+            vst3PresetRow.Children.Add(vst3PresetBtn);
 
-            vst3Panel.Children.Add(new TextBlock { Text = "Plugin:", FontSize = 11, Opacity = 0.7 });
-            vst3Panel.Children.Add(vst3PluginGrid);
-            vst3Panel.Children.Add(new TextBlock { Text = "Preset (optional):", FontSize = 11, Opacity = 0.7, Margin = new Thickness(0, 4, 0, 0) });
-            vst3Panel.Children.Add(vst3PresetGrid);
+            vst3Panel.Children.Add(vst3PluginRow);
+            vst3Panel.Children.Add(vst3PresetRow);
             vst3Panel.Visibility = slotInstrument?.Type == InstrumentType.Vst3 ? Visibility.Visible : Visibility.Collapsed;
 
             cardContent.Children.Add(sf2Panel);
@@ -416,6 +410,7 @@ public sealed partial class SettingsWindow : Window
                     _settings.ButtonMappings[slotIdx].InstrumentId = null;
                     UpdateSlotInstrument(slotIdx, null);
                     sf2Label.Text = "—";
+                    ToolTipService.SetToolTip(sf2Btn, sf2Label.Text);
                 }
                 else
                 {
@@ -423,7 +418,7 @@ public sealed partial class SettingsWindow : Window
                     _settings.ButtonMappings[slotIdx].InstrumentId = selectedInst.Id;
                     UpdateSlotInstrument(slotIdx, selectedInst);
                     sf2Label.Text = GetSf2TextForSlot(selectedInst);
-                    ToolTipService.SetToolTip(sf2Label, selectedInst.SoundFontPath);
+                    ToolTipService.SetToolTip(sf2Btn, selectedInst.SoundFontPath);
                 }
             };
 
@@ -438,7 +433,7 @@ public sealed partial class SettingsWindow : Window
                     var updated = rowState.SlotInstrument with { SoundFontPath = path };
                     UpdateSlotInstrument(slotIdx, updated);
                     sf2Label.Text = Path.GetFileNameWithoutExtension(path);
-                    ToolTipService.SetToolTip(sf2Label, path);
+                    ToolTipService.SetToolTip(sf2Btn, path);
                     _catalog.UpdateInstrumentSoundFont(updated.Id, path);
                 }
             };

@@ -30,6 +30,7 @@ set(VST3_BASE_SOURCES
 )
 set(VST3_HOSTING_SOURCES
     ${VST3_SDK_ROOT}/public.sdk/source/common/commonstringconvert.cpp
+    ${VST3_SDK_ROOT}/public.sdk/source/common/memorystream.cpp
     ${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module.cpp
     ${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/module_win32.cpp
     ${VST3_SDK_ROOT}/public.sdk/source/vst/hosting/plugprovider.cpp

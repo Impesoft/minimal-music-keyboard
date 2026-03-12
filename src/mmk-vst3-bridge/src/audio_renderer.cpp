@@ -16,6 +16,7 @@
 #include <pluginterfaces/vst/ivstmidicontrollers.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/ivstmessage.h>
+#include <public.sdk/source/common/memorystream.h>
 #include <public.sdk/source/vst/hosting/eventlist.h>
 #include <public.sdk/source/vst/vstpresetfile.h>
 
@@ -107,6 +108,36 @@ namespace
             LocalFree(buffer);
 
         return stream.str();
+    }
+
+    void SyncControllerStateFromComponent(
+        Steinberg::Vst::IComponent* component,
+        Steinberg::Vst::IEditController* controller,
+        std::vector<std::string>& diagnostics)
+    {
+        if (component == nullptr || controller == nullptr)
+            return;
+
+        Steinberg::MemoryStream componentStateStream;
+        const auto getStateResult = component->getState(&componentStateStream);
+        if (getStateResult != Steinberg::kResultOk)
+        {
+            diagnostics.emplace_back(
+                "component getState() for controller sync failed (" + FormatTResult(getStateResult) + ").");
+            return;
+        }
+
+        componentStateStream.seek(0, Steinberg::IBStream::kIBSeekSet, nullptr);
+        const auto setComponentStateResult = controller->setComponentState(&componentStateStream);
+        if (setComponentStateResult == Steinberg::kResultOk)
+        {
+            diagnostics.emplace_back("controller state synchronized from component.");
+        }
+        else
+        {
+            diagnostics.emplace_back(
+                "controller setComponentState() failed (" + FormatTResult(setComponentStateResult) + ").");
+        }
     }
 }
 
@@ -249,6 +280,7 @@ bool AudioRenderer::Load(const std::string& pluginPath, const std::string& prese
                 {
                     supportsEditor_ = true;
                     editorDiagnostics.emplace_back("controller initialize() succeeded.");
+                    SyncControllerStateFromComponent(component_.get(), controller_.get(), editorDiagnostics);
                 }
             }
 
@@ -334,6 +366,15 @@ bool AudioRenderer::Load(const std::string& pluginPath, const std::string& prese
             if (!presetOk)
             {
                 std::cerr << "[AudioRenderer] VST3 preset load failed: " << presetPath << "\n";
+            }
+            else if (controller_ && !controllerSharesComponent_)
+            {
+                std::vector<std::string> presetDiagnostics;
+                SyncControllerStateFromComponent(component_.get(), controller_.get(), presetDiagnostics);
+                if (!presetDiagnostics.empty())
+                {
+                    editorDiagnostics_ += " " + JoinDiagnostics(presetDiagnostics);
+                }
             }
         }
         else

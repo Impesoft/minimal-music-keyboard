@@ -27,6 +27,25 @@
 
 <!-- append new learnings below -->
 
+### OB-Xd VST3 Host Compatibility Fix (2026-03-12)
+
+**Files modified:**
+- `src/mmk-vst3-bridge/src/audio_renderer.cpp` — Added controller state sync from component after separate-controller initialization and after successful preset loads
+- `src/mmk-vst3-bridge/CMakeLists.txt` — Added Steinberg `memorystream.cpp` so `Steinberg::MemoryStream` links in the native bridge build
+
+**What fixed the likely host-side compatibility gap:**
+- Some VST3 plugins, including OB-Xd-style separate-controller plugins, expect the host to call `IEditController::setComponentState()` after `controller->initialize()`.
+- Our host already discovered and initialized separate controllers, but never copied the component state into the controller, leaving controller-side parameters out of sync with the component.
+- The bridge now snapshots component state into a `Steinberg::MemoryStream`, rewinds it, and passes it to `controller_->setComponentState()` for separate-controller plugins.
+
+**Why this matters:**
+- This is a standard VST3 host responsibility for split component/controller plugins and can affect load-time compatibility, editor behavior, and initial parameter state.
+- Re-running the same sync after a `.vstpreset` load keeps the controller/editor aligned with the newly loaded component state.
+
+**Build result:**
+- ✅ Native bridge builds successfully in Release after linking `memorystream.cpp`
+- ✅ Managed app builds successfully in Release (2 pre-existing CS0414 warnings only)
+
 ### Cumulative VST3 Bridge Summary (2026-03-01 through 2026-03-12)
 
 **Overview:** Faye implemented and debugged native VST3 plugin hosting via C++ bridge (mmk-vst3-bridge) with managed C# backend and Win32 GUI integration.

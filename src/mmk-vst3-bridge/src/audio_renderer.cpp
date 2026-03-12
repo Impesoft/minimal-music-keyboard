@@ -6,8 +6,11 @@
 #include <iostream>
 #include <vector>
 
+#include "host_application.h"
 #include <pluginterfaces/base/ipluginbase.h>
 #include <pluginterfaces/vst/ivstmidicontrollers.h>
+#include <pluginterfaces/vst/ivsteditcontroller.h>
+#include <pluginterfaces/vst/ivstmessage.h>
 #include <public.sdk/source/vst/hosting/eventlist.h>
 #include <public.sdk/source/vst/vstpresetfile.h>
 
@@ -69,11 +72,32 @@ bool AudioRenderer::Load(const std::string& pluginPath, const std::string& prese
         return false;
     }
 
-    if (component_->initialize(nullptr) != Steinberg::kResultOk)
+    hostApp_ = Steinberg::owned(new HostApplication());
+    if (component_->initialize(hostApp_) != Steinberg::kResultOk)
     {
         errorMessage = "Failed to initialize VST3 component.";
         ResetPluginState();
         return false;
+    }
+
+    // Query IEditController from component (may be null for some plugins)
+    Steinberg::Vst::IEditController* controllerRaw = nullptr;
+    if (component_->queryInterface(Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&controllerRaw)) == Steinberg::kResultOk)
+    {
+        controller_ = Steinberg::owned(controllerRaw);
+        controller_->initialize(hostApp_);
+
+        // Connect component and controller via IConnectionPoint if supported
+        Steinberg::Vst::IConnectionPoint* compCP = nullptr;
+        Steinberg::Vst::IConnectionPoint* ctrlCP = nullptr;
+        if (component_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&compCP)) == Steinberg::kResultOk &&
+            controller_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&ctrlCP)) == Steinberg::kResultOk)
+        {
+            compCP->connect(ctrlCP);
+            ctrlCP->connect(compCP);
+        }
+        if (compCP) compCP->release();
+        if (ctrlCP) ctrlCP->release();
     }
 
     Steinberg::Vst::IAudioProcessor* processorRaw = nullptr;
@@ -152,11 +176,41 @@ void AudioRenderer::ResetPluginState()
     if (component_)
     {
         component_->setActive(false);
+    }
+
+    // Disconnect IConnectionPoint before terminate
+    {
+        Steinberg::Vst::IConnectionPoint* compCP = nullptr;
+        Steinberg::Vst::IConnectionPoint* ctrlCP = nullptr;
+        bool hasCompCP = component_ && 
+            component_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&compCP)) == Steinberg::kResultOk;
+        bool hasCtrlCP = controller_ && 
+            controller_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&ctrlCP)) == Steinberg::kResultOk;
+        
+        if (hasCompCP && hasCtrlCP)
+        {
+            if (compCP) compCP->disconnect(ctrlCP);
+            if (ctrlCP) ctrlCP->disconnect(compCP);
+        }
+        if (compCP) compCP->release();
+        if (ctrlCP) ctrlCP->release();
+    }
+
+    // Now safe to terminate
+    if (component_)
+    {
         component_->terminate();
     }
 
+    if (controller_)
+    {
+        controller_->terminate();
+    }
+
     processor_ = nullptr;
+    controller_ = nullptr;
     component_ = nullptr;
+    hostApp_ = nullptr;
     module_.reset();
 
     {
@@ -252,16 +306,24 @@ void AudioRenderer::QueueNoteOffAll()
 
 void AudioRenderer::QueueSetProgram(int program)
 {
+    // VST3 program change: use kDataEvent with raw MIDI program change (0xC0 + channel, program)
+    // kLegacyMIDICCOutEvent is an OUTPUT event (plugin -> host), not an input event.
+    // Most VST3 instruments respond to MIDI channel 0 program change via kDataEvent.
     Event evt{};
     evt.busIndex = kEventBusIndex;
     evt.sampleOffset = 0;
     evt.ppqPosition = 0.0;
-    evt.flags = 0;
-    evt.type = Event::kLegacyMIDICCOutEvent;
-    evt.midiCCOut.controlNumber = Steinberg::Vst::kCtrlProgramChange;
-    evt.midiCCOut.channel = kEventChannel;
-    evt.midiCCOut.value = static_cast<Steinberg::int8>(std::clamp(program, 0, 127));
-    evt.midiCCOut.value2 = 0;
+    evt.flags = Event::kIsLive;
+    evt.type = Event::kDataEvent;
+    evt.data.type = Steinberg::Vst::DataEvent::kMidiSysEx; // Generic MIDI data
+    
+    // Raw MIDI program change: status byte (0xC0 + channel) followed by program number
+    static thread_local uint8_t midiBytes[2];
+    midiBytes[0] = 0xC0 | static_cast<uint8_t>(kEventChannel); // Program change on channel 0
+    midiBytes[1] = static_cast<uint8_t>(std::clamp(program, 0, 127));
+    
+    evt.data.bytes = midiBytes;
+    evt.data.size = 2;
 
     std::lock_guard<std::mutex> lock(eventsMutex_);
     pendingEvents_.push_back(evt);

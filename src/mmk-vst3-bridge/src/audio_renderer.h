@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "mmf_writer.h"
+#include "host_application.h"
 
 #include <pluginterfaces/base/funknown.h>
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
@@ -47,9 +48,11 @@ private:
     std::vector<Steinberg::Vst::Event> pendingEvents_{};
     std::mutex pluginMutex_;
     VST3::Hosting::Module::Ptr module_{};
+    Steinberg::IPtr<HostApplication> hostApp_{};
     Steinberg::IPtr<Steinberg::Vst::IComponent> component_{};
     Steinberg::IPtr<Steinberg::Vst::IAudioProcessor> processor_{};
+    Steinberg::IPtr<Steinberg::Vst::IEditController> controller_{};
 
-    static constexpr int kSampleRate = 44'100;
-    static constexpr int kMaxBlockSize = 256;
+    static constexpr int kSampleRate = 48'000;
+    static constexpr int kMaxBlockSize = 960;
 };

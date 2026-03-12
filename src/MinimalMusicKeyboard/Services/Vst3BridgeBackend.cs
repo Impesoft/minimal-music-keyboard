@@ -44,6 +44,7 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
     private readonly object _stateLock = new();
     private volatile bool _isReady;
     private volatile bool _disposed;
+    private volatile int _lastReadPos = -1;
 
     // ── IPC resources ─────────────────────────────────────────────────────────
 
@@ -144,6 +145,16 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
 
         try
         {
+            // Check if bridge has written a new frame since last read
+            int writePos = view.ReadInt32(12);   // writePos is at MMF header offset 12
+            if (writePos == _lastReadPos)
+            {
+                // Bridge hasn't written a new frame yet — return silence
+                Array.Clear(buffer, offset, count);
+                return count;
+            }
+            _lastReadPos = writePos;
+
             int samplesToCopy = Math.Min(count, _audioWorkBuffer.Length);
             view.ReadArray(MmfHeaderSize, _audioWorkBuffer, 0, samplesToCopy);
             Array.Copy(_audioWorkBuffer, 0, buffer, offset, samplesToCopy);
@@ -239,6 +250,7 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
             var psi = new ProcessStartInfo
             {
                 FileName        = bridgeExePath,
+                Arguments       = $"{hostPid}",
                 UseShellExecute = false,
                 CreateNoWindow  = true,
             };
@@ -382,6 +394,7 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, ISampleProvider
             _disposed = true;
         }
         _isReady = false;
+        _lastReadPos = -1;
 
         // Enqueue shutdown command and complete channel
         _commandChannel.Writer.TryWrite(new MidiCommand { CommandKind = MidiCommand.Kind.Shutdown });

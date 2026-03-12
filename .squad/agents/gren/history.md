@@ -233,3 +233,16 @@
 **Non-blocking notes (4):** Null host context in initialize(), std::mutex on render thread (acceptable for current workload), frameSize/kMaxBlockSize alignment assumption, silent preset failure on stderr only.
 
 **Lesson learned:** When reviewing VST3 hosting code, the three most critical checks are: (a) the initialization sequence matches the SDK's required lifecycle (initialize → setupProcessing → setActive → setProcessing, with exact reverse on teardown), (b) COM references are managed via smart pointers (IPtr/owned) not raw release() calls — a single missed release() is an invisible leak, and (c) the process() call receives properly structured ProcessData with pre-allocated buffers on the render thread to avoid heap allocation in the audio path. This implementation passes all three.
+
+### 2026-03-12 — VST3 Bridge Fixes Review (APPROVED WITH CONDITIONS)
+
+**Reviewed:** C# and C++ fixes for VST3 bridge (Faye, Jet)
+**Verdict:** APPROVED WITH CONDITIONS — 2 blocking lifecycle fixes, 1 non-blocking race warning
+
+**Key findings:**
+1. **BLOCKING: `HostApplication` lifetime** — Local `IPtr` in `Load()` releases the host app object prematurely unless the plugin `addRef()`s it. This is a common crash vector for plugins that store the raw pointer. Fix: Store `IPtr<HostApplication>` as a member of `AudioRenderer`.
+2. **BLOCKING: `IConnectionPoint` teardown** — `terminate()` called without prior `disconnect()`. This risks use-after-free if components communicate during teardown. Fix: Explicitly disconnect before terminating.
+3. **Audio thread race acknowledged** — `volatile _lastReadPos` prevents stale reads but allows torn reads (TOCTOU). Accepted for MVP; requires double-buffering or Seqlock for glitch-free audio in Phase 2.
+4. **Architectural changes correct** — `kSampleRate` 48kHz, `kMaxBlockSize` 960, MIDI PC bytes (2 bytes) match spec and standard practice.
+
+**Lesson learned:** When dealing with C++ COM/ref-counted objects (like VST3), never rely on the *consumer* (the plugin) to keep an object alive via `addRef()`. Always hold a strong reference (via `IPtr` member) on the producer side (the host) for the entire lifetime of the session. "Fire and forget" ownership transfer only works if you trust the other side to be perfectly spec-compliant, which VST3 plugins notoriously are not.

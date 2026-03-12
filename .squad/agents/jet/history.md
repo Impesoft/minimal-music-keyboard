@@ -27,6 +27,39 @@
 
 <!-- append new learnings below -->
 
+### Session: VST3 C# Bug Fixes — Process Arguments + Ring-buffer Read Tracking (2026-03-12)
+
+**Context:** VST3 pipeline audit found two C# bugs in `Vst3BridgeBackend.cs` preventing VST3 instruments from producing sound. C++ fixes handled by Faye in parallel.
+
+**Bug 1 — Missing Process Arguments (ROOT CAUSE):**
+`LoadAsync()` launched `mmk-vst3-bridge.exe` without passing `Arguments` to `ProcessStartInfo`. The bridge process received `argc == 1`, printed usage, and exited with code 1. The C# side timed out waiting for pipe connection, set `_isReady = false`, and all subsequent NoteOn/NoteOff calls were silently dropped.
+
+**Fix:** Added `Arguments = $"{hostPid}"` to the `ProcessStartInfo` block (line 242). The `hostPid` variable (already in scope as `Process.GetCurrentProcess().Id`) is now passed as the first command-line argument. Bridge now receives the host PID, constructs correct pipe/MMF names, connects successfully, and transitions to ready state.
+
+**Bug 2 — Re-reading Same Frame (Ring-buffer Awareness):**
+`Read()` always read from `MmfHeaderSize` offset without checking if the bridge had written a new frame since the last read. On WASAPI callbacks faster than the bridge's render tick, the same frame got re-read and played twice (caused phasing/distortion at some sample rates). Also risked reading partially-written frames.
+
+**Fix:** 
+1. Added `volatile int _lastReadPos = -1` field (line 47) to track the last read position
+2. In `Read()`, added check before reading: read `writePos` from MMF header offset 12, compare to `_lastReadPos`, return silence if unchanged (lines 147-153)
+3. Update `_lastReadPos = writePos` after confirming new frame available
+4. Reset `_lastReadPos = -1` in `Dispose()` (line 388)
+
+**MMF Header Layout (confirmed from code comments):**
+- Offset  0: magic (0x4D4D4B56)
+- Offset  4: version (1)
+- Offset  8: frameSize
+- Offset 12: writePos (atomic int32; bridge advances after each block)
+- Offset 16+: audio data (float32 stereo-interleaved)
+
+**Build result:** `dotnet build --no-incremental` → **Build succeeded in ~9.1s, 0 errors, 2 warnings** (CS0414 about unused `_frameSize` field — pre-existing, harmless).
+
+**Key learnings:**
+1. **Process launch requires explicit argument passing:** `ProcessStartInfo.Arguments` must be set manually. Unlike Unix `exec`, Windows CreateProcess doesn't merge the command into `argv[0]` — the first actual argument must be explicitly passed.
+2. **Ring-buffer synchronization requires read tracking:** Audio threads reading from shared memory must track `writePos` to avoid re-reading stale frames. Without this, high-frequency WASAPI callbacks (e.g., 5ms quantum) read the same data multiple times before the bridge's 20ms render tick writes a new frame.
+3. **Volatile fields for cross-thread state:** `_lastReadPos` is written by audio thread, but needs volatile semantics because it's logically shared state (even though only one thread accesses it, the MMF read is the coordination point). Volatile ensures compiler doesn't reorder reads of `_lastReadPos` vs `writePos`.
+4. **Reset tracking state on dispose:** Any frame position tracking must reset to -1 on dispose/reset, so if the backend is reused or a new instrument loads, the first frame is always read (not skipped due to stale `_lastReadPos`).
+
 ### Session: Phase 4 — VST3 Settings UI (2026-03-11, Latest)
 
 **Context:** Extended the Settings UI to support VST3 instrument configuration for the 8 button mapping slots. Users can now select either SF2 or VST3 instruments per slot.

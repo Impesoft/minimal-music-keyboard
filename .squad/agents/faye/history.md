@@ -27,6 +27,42 @@
 
 <!-- append new learnings below -->
 
+### VST3 Lifetime Crash Fixes (2026-03-19)
+
+**Files modified:**
+- `src/mmk-vst3-bridge/src/audio_renderer.h` — Added `hostApp_` member and include for `host_application.h`
+- `src/mmk-vst3-bridge/src/audio_renderer.cpp` — Changed `hostApp` from local to member variable; added `IConnectionPoint::disconnect()` before `terminate()`
+
+**Critical crash risks fixed:**
+1. **HostApplication dangling pointer (Fix 1):** Plugins that store `IHostApplication*` without calling `addRef()` would crash when the local `IPtr` in `Load()` went out of scope. Now `hostApp_` is a member variable that lives until `ResetPluginState()` calls `hostApp_ = nullptr` after component termination.
+2. **IConnectionPoint use-after-free (Fix 2):** Components and controllers connected via `IConnectionPoint` during `Load()` were not disconnected before `terminate()`, causing crashes if either tried to notify the other during teardown. Now `ResetPluginState()` queries both connection points, calls `disconnect()` on each, and releases them before calling `terminate()`.
+
+**VST3 patterns learned:**
+- COM lifetime for host objects: Plugins may store raw pointers without ref-counting, so host objects passed to `initialize()` must outlive the component lifetime.
+- Connection point teardown order: Always call `IConnectionPoint::disconnect()` before `IComponent::terminate()` to prevent notifications to dead objects.
+- Proper cleanup sequence: `setActive(false)` → disconnect connection points → `terminate()` → release COM pointers → reset module.
+
+**Build result:** C# solution builds clean with 2 pre-existing warnings (unrelated to these changes).
+
+### VST3 Bridge Bug Fixes (2026-03-19)
+
+**Files modified:**
+- `src/mmk-vst3-bridge/src/audio_renderer.h` — Fixed sample rate (44,100 → 48,000 Hz) and block size (256 → 960 samples) to match C# host; added `controller_` member
+- `src/mmk-vst3-bridge/src/audio_renderer.cpp` — Integrated `IHostApplication` stub, query/initialize `IEditController`, connect via `IConnectionPoint`, fixed `QueueSetProgram` to use `kDataEvent` with raw MIDI bytes
+- `src/mmk-vst3-bridge/src/host_application.h` — **NEW** minimal `IHostApplication` stub with atomic refcounting
+
+**Key bugs fixed:**
+1. **Sample rate/block size mismatch:** Bridge rendered at 44.1 kHz / 256 samples while host expected 48 kHz / 960 samples, causing wrong pitch and 704 samples of silence padding per frame
+2. **Missing IHostApplication:** `component_->initialize(nullptr)` violated VST3 spec; some plugins fail to load without valid host context
+3. **Missing IEditController:** Controller was never queried or initialized, preventing GUI support and causing wrong default state in some plugins
+4. **Wrong event type in QueueSetProgram:** Used `kLegacyMIDICCOutEvent` (output event) as input; fixed to use `kDataEvent` with raw MIDI program change bytes (0xC0 | channel, program)
+
+**VST3 patterns learned:**
+- `IHostApplication` required by spec even if plugin doesn't use it; must implement `getName()`, `queryInterface()`, `addRef()`, `release()`
+- `IEditController` may be directly queryable from `IComponent` (single-component plugins) or separate (multi-component); connect via `IConnectionPoint` if both support it
+- MIDI program change in VST3: use `Event::kDataEvent` with 2-byte raw MIDI message [0xCn, program], not `kLegacyMIDICCOutEvent` (that's plugin→host output)
+- All buffers and constants propagate correctly when using `kMaxBlockSize` constant (no hardcoded 256 values remained)
+
 ### Phase 3b — VST3 SDK Integration (2026-03-12)
 
 **Files updated:**

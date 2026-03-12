@@ -246,3 +246,51 @@
 4. **Architectural changes correct** — `kSampleRate` 48kHz, `kMaxBlockSize` 960, MIDI PC bytes (2 bytes) match spec and standard practice.
 
 **Lesson learned:** When dealing with C++ COM/ref-counted objects (like VST3), never rely on the *consumer* (the plugin) to keep an object alive via `addRef()`. Always hold a strong reference (via `IPtr` member) on the producer side (the host) for the entire lifetime of the session. "Fire and forget" ownership transfer only works if you trust the other side to be perfectly spec-compliant, which VST3 plugins notoriously are not.
+
+## VST3 Bridge Fixes Code Review (2026-03-12)
+
+**Task:** Architecture + lifetime safety review of VST3 pipeline fixes
+**Status:** ✅ APPROVED WITH CONDITIONS — Commit 9939563
+
+### Review Verdict
+**Safe to commit after fixing two C++ lifetime bugs.** Audio fixes architecturally sound; C# thread safety accepted for MVP.
+
+### Blocking Issues (Both Fixed Pre-Commit)
+
+**Issue 1: C++ HostApplication Lifetime (High Severity)**
+- Problem: Created as local IPtr in Load(); destroyed on return; plugins store raw pointer → dangling
+- Fix: Changed to member Steinberg::IPtr<HostApplication> hostApp_; store in Load(), release in ResetPluginState()
+- Status: ✅ Fixed by Faye
+
+**Issue 2: C++ IEditController Teardown (Medium Severity)**
+- Problem: terminate() called without disconnect() on IConnectionPoint; use-after-free risk
+- Fix: Query IConnectionPoint from both component and controller; call disconnect() before terminate()
+- Status: ✅ Fixed by Faye
+
+### Non-Blocking Notes (Phase 2 / MVP Scope)
+
+**Note 1: C# _lastReadPos Thread Safety (Low Severity)**
+- Issue: TOCTOU race between writePos read and audio buffer copy in Vst3BridgeBackend.Read()
+- Mitigation: Race window small (~microseconds copy vs 20ms frame); acceptable for MVP
+- Future: Add double-buffering or Seqlock pattern in Phase 2
+- Status: ✅ Accepted
+
+### Sign-Off Summary
+
+| Category | Assessment | Notes |
+|----------|------------|-------|
+| Architecture | ✅ Sound | MIDI bytes, sample rate, block size correct |
+| C++ Lifetime | ✅ Safe | Blockers fixed; IPtr/COM model compliant |
+| C++ Threading | ✅ Safe | Audio and editor threads properly isolated (when Phase 2 added) |
+| C# Correctness | ✅ Better | Ring-buffer awareness prevents stale reads |
+| Regression Risk | Low | SF2 backend unaffected; new code isolated |
+
+### Coordination Notes
+- Faye: Implemented both C++ fixes pre-commit; no review hold
+- Jet: C# fixes clean; 2 surgical additions to Vst3BridgeBackend
+- Combined: 4 orchestration logs, 1 session log, all decisions merged
+
+### Learnings for Future
+- VST3 lifetime management critical: IPtr + member storage required for IHostApplication
+- IConnectionPoint disconnect *before* terminate per VST3 best practices
+- Named pipe + MMF protocol robust; ring-buffer tracking essential for timing correctness

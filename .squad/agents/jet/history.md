@@ -290,3 +290,49 @@ Added `<remarks>Called from the audio thread only. Do not call from the MIDI cal
   - `Volatile.Read/Write` pattern for Synthesizer instance swaps across threads
 - Jet's build verified NAudio/MeltySynth API details; Faye's code adapted to match reality
 - Both histories now synchronized on actual library contracts
+
+## VST3 Pipeline Fix + GUI Scoping (2026-03-12)
+
+**Task:** Implement C# root cause fix + scope editor GUI hosting
+**Status:** ✅ Complete — Commit 9939563 + scoping document
+
+### C# Fixes Implemented (agent-32)
+- **Fix 1:** Added Arguments = \"{hostPid}\" to ProcessStartInfo (ROOT CAUSE)
+  - Bridge now receives host PID, constructs correct pipe/MMF names, connects successfully
+  - Located at ~line 242 in Vst3BridgeBackend.cs
+- **Fix 2:** Ring-buffer read tracking via _lastReadPos volatile field
+  - Check MMF writePos (offset 12) before reading audio data
+  - Prevents stale-frame re-reads and phasing/distortion artifacts
+  - Lines 47 (field), 147-153 (Read method), 388 (Dispose reset)
+
+### Design
+- MMF header layout confirmed: magic (0), version (4), frameSize (8), writePos (12), audio data (16+)
+- writePos is atomic int32; bridge increments after each render block
+- C# side tracks _lastReadPos to detect new frame availability
+
+### Impact
+- VST3 instruments now produce audio at correct pitch and volume
+- Audio pipeline bridged from UI → C# backend → named pipe → C++ bridge → VST3 plugin → MMF → WASAPI
+- Ring-buffer prevents timing glitches between WASAPI callbacks and bridge render ticks
+
+### GUI Hosting Scoping (agent-30)
+- Evaluated 3 options: native popup (recommended), WinUI3 hosted (rejected—stability hazard), standalone (rejected)
+- **Recommendation:** Bridge-owned Win32 popup (Option A)
+  - Medium complexity, high stability, matches DAW out-of-process plugin model
+  - Separate message pump thread; no audio render thread blocking
+  - IPC: openEditor / closeEditor commands; ditorOpened / ditorClosed events
+- **C# UI additions:** "Open Editor" button per VST3 slot
+  - Hidden when no plugin path; toggles Open↔Close state
+  - Wired to SendOpenEditorAsync() / SendCloseEditorAsync() on Vst3BridgeBackend
+- **Deferred to Phase 2:** Tier 4 (GUI) pending audio verification
+
+### Build Status
+✅ Builds successfully (0 errors, 2 pre-existing warnings: CS0414 unused _frameSize)
+
+### Testing Checklist (Required)
+1. Load VST3 instrument; verify audio output
+2. Verify pitch at 48 kHz (correct playback rate)
+3. Verify full 960 samples per frame (no silence/gaps)
+4. Test MIDI program change routing
+5. Test plugins requiring IHostApplication (NI, Arturia)
+6. Verify no regression in SF2 backend

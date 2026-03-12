@@ -33,7 +33,6 @@ public sealed partial class SettingsWindow : Window
         int SlotIndex,
         Button SlotBadge,
         TextBlock SlotLabel,
-        RadioButtons TypeSelector,
         StackPanel Sf2Panel,
         StackPanel Vst3Panel,
         ComboBox InstrumentCombo,
@@ -154,16 +153,26 @@ public sealed partial class SettingsWindow : Window
                 ? _catalog.GetById(mapping.InstrumentId)
                 : null;
 
-            // Build the row UI
-            var rowContainer = new StackPanel { Margin = new Thickness(0, 4, 0, 8) };
+            // ── Card container ────────────────────────────────────────────────────────
+            var card = new Border
+            {
+                CornerRadius = new CornerRadius(6),
+                BorderThickness = new Thickness(1),
+                BorderBrush = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"],
+                Background = (Brush)Application.Current.Resources["CardBackgroundFillColorDefaultBrush"],
+                Padding = new Thickness(12, 8, 12, 10),
+                Margin = new Thickness(0, 0, 0, 6),
+            };
+            var cardContent = new StackPanel { Spacing = 6 };
+            card.Child = cardContent;
 
-            // ── Row 1: Badge | Instrument Name/Type Selector | Trigger | Map | ✕ ───────
-            var row1 = new Grid();
-            row1.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });           // badge
-            row1.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // type/name
-            row1.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });           // trigger
-            row1.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(68) });           // Map
-            row1.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });           // ✕
+            // ── Header row: badge | type radios (fills) | trigger | Map | ✕ ─────────
+            var headerRow = new Grid { VerticalAlignment = VerticalAlignment.Center };
+            headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });          // badge
+            headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // type radios
+            headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });             // trigger label
+            headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(56) });          // Map
+            headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });          // ✕
 
             // Slot badge — clickable button to select this instrument from the UI
             var slotLabel = new TextBlock
@@ -186,21 +195,86 @@ public sealed partial class SettingsWindow : Window
                 Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
                 BorderThickness = new Thickness(0),
                 VerticalAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Left,
             };
 
-            // Type selector + instrument config panel
-            var configPanel = new StackPanel { Margin = new Thickness(4, 0, 4, 0) };
-
-            var typeSelector = new RadioButtons
+            // Inline radio buttons for SF2 / VST3 selection
+            var rbSf2 = new RadioButton
             {
-                ItemsSource = new[] { "SF2 (SoundFont)", "VST3 Plugin" },
-                SelectedIndex = slotInstrument?.Type == InstrumentType.Vst3 ? 1 : 0,
-                Margin = new Thickness(0, 0, 0, 4),
+                Content = "SF2",
+                GroupName = $"type-slot-{i}",
+                IsChecked = slotInstrument?.Type != InstrumentType.Vst3,
+                VerticalAlignment = VerticalAlignment.Center,
+                FontSize = 12,
             };
+            var rbVst3 = new RadioButton
+            {
+                Content = "VST3",
+                GroupName = $"type-slot-{i}",
+                IsChecked = slotInstrument?.Type == InstrumentType.Vst3,
+                VerticalAlignment = VerticalAlignment.Center,
+                FontSize = 12,
+                Margin = new Thickness(8, 0, 0, 0),
+            };
+            var typePanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 0, 0),
+            };
+            typePanel.Children.Add(rbSf2);
+            typePanel.Children.Add(rbVst3);
+
+            // Trigger label
+            var triggerLabel = new TextBlock
+            {
+                Text = mapping.TriggerLabel,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextAlignment = TextAlignment.Center,
+                FontSize = 11,
+                Opacity = 0.6,
+                Margin = new Thickness(8, 0, 4, 0),
+            };
+
+            // Map button
+            var mapBtn = new Button
+            {
+                Content = "Map",
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                FontSize = 11,
+                Margin = new Thickness(2, 0, 2, 0),
+            };
+            mapBtn.Click += (_, _) => StartListening(slotIdx);
+
+            // Clear button
+            var clearBtn = new Button { Content = "✕", Width = 24, FontSize = 11 };
+            clearBtn.Click += (_, _) => ClearMapping(slotIdx);
+
+            Grid.SetColumn(slotBadge, 0);
+            Grid.SetColumn(typePanel, 1);
+            Grid.SetColumn(triggerLabel, 2);
+            Grid.SetColumn(mapBtn, 3);
+            Grid.SetColumn(clearBtn, 4);
+
+            headerRow.Children.Add(slotBadge);
+            headerRow.Children.Add(typePanel);
+            headerRow.Children.Add(triggerLabel);
+            headerRow.Children.Add(mapBtn);
+            headerRow.Children.Add(clearBtn);
+
+            cardContent.Children.Add(headerRow);
+
+            // Thin separator between header and content
+            var separator = new Border
+            {
+                Height = 1,
+                Background = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"],
+                Margin = new Thickness(0, 2, 0, 2),
+            };
+            cardContent.Children.Add(separator);
 
             // SF2 panel: Instrument combo + SF2 path + browse
-            var sf2Panel = new StackPanel { Spacing = 4 };
+            var sf2Panel = new StackPanel { Spacing = 4, Margin = new Thickness(28, 0, 0, 0) };
             var combo = new ComboBox
             {
                 HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -226,7 +300,7 @@ public sealed partial class SettingsWindow : Window
 
             var sf2PathGrid = new Grid();
             sf2PathGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            sf2PathGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(60) });
+            sf2PathGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             var sf2Label = new TextBlock
             {
@@ -251,14 +325,14 @@ public sealed partial class SettingsWindow : Window
 
             sf2Panel.Children.Add(combo);
             sf2Panel.Children.Add(sf2PathGrid);
-            sf2Panel.Visibility = typeSelector.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
+            sf2Panel.Visibility = slotInstrument?.Type != InstrumentType.Vst3 ? Visibility.Visible : Visibility.Collapsed;
 
             // VST3 panel: Plugin path + browse, Preset path + browse
-            var vst3Panel = new StackPanel { Spacing = 4 };
-            
+            var vst3Panel = new StackPanel { Spacing = 4, Margin = new Thickness(28, 0, 0, 0) };
+
             var vst3PluginGrid = new Grid();
             vst3PluginGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            vst3PluginGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(60) });
+            vst3PluginGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var vst3PluginLabel = new TextBlock
             {
                 Text = GetVst3PluginTextForSlot(slotInstrument),
@@ -282,7 +356,7 @@ public sealed partial class SettingsWindow : Window
 
             var vst3PresetGrid = new Grid { Margin = new Thickness(0, 2, 0, 0) };
             vst3PresetGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            vst3PresetGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(60) });
+            vst3PresetGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var vst3PresetLabel = new TextBlock
             {
                 Text = GetVst3PresetTextForSlot(slotInstrument),
@@ -308,56 +382,23 @@ public sealed partial class SettingsWindow : Window
             vst3Panel.Children.Add(vst3PluginGrid);
             vst3Panel.Children.Add(new TextBlock { Text = "Preset (optional):", FontSize = 11, Opacity = 0.7, Margin = new Thickness(0, 4, 0, 0) });
             vst3Panel.Children.Add(vst3PresetGrid);
-            vst3Panel.Visibility = typeSelector.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+            vst3Panel.Visibility = slotInstrument?.Type == InstrumentType.Vst3 ? Visibility.Visible : Visibility.Collapsed;
 
-            configPanel.Children.Add(typeSelector);
-            configPanel.Children.Add(sf2Panel);
-            configPanel.Children.Add(vst3Panel);
-
-            // Trigger label
-            var triggerLabel = new TextBlock
-            {
-                Text = mapping.TriggerLabel,
-                VerticalAlignment = VerticalAlignment.Center,
-                TextAlignment = TextAlignment.Center,
-                FontSize = 11, Opacity = 0.6,
-                Margin = new Thickness(2, 0, 2, 0),
-            };
-
-            // Map button
-            var mapBtn = new Button
-            {
-                Content = "Map",
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                FontSize = 11,
-                Margin = new Thickness(2, 0, 2, 0),
-            };
-            mapBtn.Click += (_, _) => StartListening(slotIdx);
-
-            // Clear button
-            var clearBtn = new Button { Content = "✕", Width = 24, FontSize = 11 };
-            clearBtn.Click += (_, _) => ClearMapping(slotIdx);
-
-            Grid.SetColumn(slotBadge, 0);
-            Grid.SetColumn(configPanel, 1);
-            Grid.SetColumn(triggerLabel, 2);
-            Grid.SetColumn(mapBtn, 3);
-            Grid.SetColumn(clearBtn, 4);
-
-            row1.Children.Add(slotBadge);
-            row1.Children.Add(configPanel);
-            row1.Children.Add(triggerLabel);
-            row1.Children.Add(mapBtn);
-            row1.Children.Add(clearBtn);
-
-            rowContainer.Children.Add(row1);
+            cardContent.Children.Add(sf2Panel);
+            cardContent.Children.Add(vst3Panel);
 
             // Wire up event handlers
-            typeSelector.SelectionChanged += (_, _) =>
+            rbSf2.Checked += (_, _) =>
             {
-                sf2Panel.Visibility = typeSelector.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
-                vst3Panel.Visibility = typeSelector.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
-                UpdateSlotInstrumentType(slotIdx, typeSelector.SelectedIndex == 1 ? InstrumentType.Vst3 : InstrumentType.SoundFont);
+                sf2Panel.Visibility = Visibility.Visible;
+                vst3Panel.Visibility = Visibility.Collapsed;
+                UpdateSlotInstrumentType(slotIdx, InstrumentType.SoundFont);
+            };
+            rbVst3.Checked += (_, _) =>
+            {
+                sf2Panel.Visibility = Visibility.Collapsed;
+                vst3Panel.Visibility = Visibility.Visible;
+                UpdateSlotInstrumentType(slotIdx, InstrumentType.Vst3);
             };
 
             slotBadge.Click += (_, _) =>
@@ -441,8 +482,8 @@ public sealed partial class SettingsWindow : Window
                 }
             };
 
-            ButtonMappingsPanel.Children.Add(rowContainer);
-            _mappingRows.Add(new MappingRowState(i, slotBadge, slotLabel, typeSelector, sf2Panel, vst3Panel,
+            ButtonMappingsPanel.Children.Add(card);
+            _mappingRows.Add(new MappingRowState(i, slotBadge, slotLabel, sf2Panel, vst3Panel,
                 combo, sf2Label, vst3PluginLabel, vst3PresetLabel, triggerLabel, mapBtn, slotInstrument));
         }
     }

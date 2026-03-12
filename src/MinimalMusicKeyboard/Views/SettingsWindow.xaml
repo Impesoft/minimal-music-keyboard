@@ -95,11 +95,7 @@
                     <TextBlock Text="Instrument Slots" FontWeight="SemiBold"/>
                     <TextBlock Text="For each slot: pick an instrument, assign its SoundFont (.sf2), then click Map and press a button on your MIDI device to trigger it."
                                FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
-                    <Border BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                            BorderThickness="1"
-                            CornerRadius="4">
-                        <StackPanel x:Name="ButtonMappingsPanel" Padding="8,4" Spacing="2"/>
-                    </Border>
+                    <StackPanel x:Name="ButtonMappingsPanel" Padding="0" Spacing="0"/>
                 </StackPanel>
 
             </StackPanel>

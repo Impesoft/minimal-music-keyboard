@@ -203,13 +203,13 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
             return;
         }
 
-        // Check for bridge exe — graceful no-op when absent (Phase 2: bridge not yet built)
+        // Check for bridge exe — raise BridgeFaulted when absent so callers can surface the error
         var bridgeExePath = Path.Combine(AppContext.BaseDirectory, "mmk-vst3-bridge.exe");
         if (!File.Exists(bridgeExePath))
         {
-            Debug.WriteLine(
-                $"[Vst3BridgeBackend] Bridge executable not found at '{bridgeExePath}'. " +
-                "VST3 support unavailable until mmk-vst3-bridge.exe is deployed.");
+            var reason = $"Bridge executable not found at '{bridgeExePath}'. Deploy mmk-vst3-bridge.exe to enable VST3 support.";
+            Debug.WriteLine($"[Vst3BridgeBackend] {reason}");
+            BridgeFaulted?.Invoke(this, new BridgeFaultedEventArgs(reason));
             return;
         }
 

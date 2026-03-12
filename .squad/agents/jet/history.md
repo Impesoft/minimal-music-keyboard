@@ -367,3 +367,77 @@ Added `<remarks>Called from the audio thread only. Do not call from the MIDI cal
 
 **Build:** All changes compiled successfully with no errors. One warning about unused `_frameSize` field in Vst3BridgeBackend (pre-existing, not introduced by this session).
 
+
+### Session: VST3 Race-Condition Fix — Backend Assigned Before Load (2026-03-12)
+
+**Context:** Faye reported two bugs in AudioEngine.HandleVst3Instrument():
+1. _activeBackend was set to _vst3Backend BEFORE LoadAsync() ran, so SupportsEditor returned false during loading.
+2. When mmk-vst3-bridge.exe is missing, LoadAsync returned silently with no user feedback.
+
+**Root cause pattern:** Volatile.Write(ref _activeBackend, _vst3Backend) preceded the fire-and-forget _ = _vst3Backend.LoadAsync(...). Backend was assigned-but-never-ready.
+
+**Fix 1 — Race condition (AudioEngine.cs):**
+- Removed premature Volatile.Write from HandleVst3Instrument().
+- Extracted LoadVst3BackendAsync(InstrumentDefinition) private async method.
+- Volatile.Write(ref _activeBackend, _vst3Backend) now runs only AFTER wait _vst3Backend.LoadAsync() completes and _vst3Backend.IsReady is true.
+- During loading, _activeBackend stays on the prior backend (SoundFont), so audio continues silently but without crashing.
+
+**Fix 2 — Silent failure (Vst3BridgeBackend.cs):**
+- Changed bridge-exe-missing case from silent eturn to BridgeFaulted?.Invoke(this, new BridgeFaultedEventArgs(reason)).
+- This fires the existing fault event without touching the state machine (bridge was never started).
+
+**Fix 3 — Error surfacing (AudioEngine.cs + IAudioEngine.cs + SettingsWindow.xaml.cs):**
+- Added vent EventHandler<string>? InstrumentLoadFailed to IAudioEngine and AudioEngine.
+- AudioEngine constructor subscribes to _vst3Backend.BridgeFaulted and re-raises as InstrumentLoadFailed.
+- SettingsWindow subscribes to InstrumentLoadFailed, dispatches to UI thread via DispatcherQueue.TryEnqueue, shows a ContentDialog with the error message.
+- Unsubscribes in ForceClose() to prevent leaks.
+
+**Fix 4 — Open Editor button (SettingsWindow.xaml.cs):**
+- Added a third branch: if backend is a Vst3BridgeBackend that is not yet ready, shows "VST3 Plugin Still Loading" message instead of the generic "Editor Not Available" message.
+
+**Key pattern learned:**
+> Never assign an active backend reference before its LoadAsync completes. Use an async helper method, await the load, then do the Volatile.Write assignment only on success. This prevents the "assigned-but-never-ready" window.
+
+### Session: VST3 Load Race Condition Fix — Completion (2026-03-12)
+
+**Status:** COMPLETE — Verified build 0 errors
+
+**Summary:** Fixed critical race condition where `_activeBackend` was assigned before async `LoadAsync()` completed, causing "Editor not available" errors. Also surfaced missing-bridge-exe failures and improved UI feedback.
+
+**Implementation details verified:**
+
+1. **LoadVst3BackendAsync method:**
+   - Private async Task that awaits `_vst3Backend.LoadAsync(instrument)`
+   - Only assigns `Volatile.Write(ref _activeBackend, _vst3Backend)` after completion and `IsReady == true`
+   - Called from `HandleVst3Instrument()` as fire-and-forget (`_ = LoadVst3BackendAsync(...)`)
+
+2. **Bridge failure handling:**
+   - `Vst3BridgeBackend.LoadAsync()` now calls `BridgeFaulted?.Invoke()` when bridge.exe missing (instead of silent return)
+   - Event triggers before returning; subscribers are notified
+
+3. **InstrumentLoadFailed event:**
+   - Added to `IAudioEngine` interface: `event EventHandler<string>? InstrumentLoadFailed`
+   - `AudioEngine` subscribes to `_vst3Backend.BridgeFaulted` in constructor; re-raises as `InstrumentLoadFailed`
+   - `SettingsWindow` subscribes on construction, handles via `DispatcherQueue.TryEnqueue` (UI thread dispatch), shows `ContentDialog`
+   - Unsubscribes in `ForceClose()` to prevent subscription leaks
+
+4. **Open Editor button improvements:**
+   - Third branch added: if `backend is Vst3BridgeBackend && !backend.IsReady`, button shows "VST3 Plugin Still Loading"
+   - Distinguishes loading state from permanent unavailability
+   - Better user experience during initial load phase
+
+**Files modified:**
+- `src/MinimalMusicKeyboard/Services/AudioEngine.cs` — Added `LoadVst3BackendAsync`, subscribed to `BridgeFaulted`
+- `src/MinimalMusicKeyboard/Services/Vst3BridgeBackend.cs` — Bridge-missing now fires `BridgeFaulted`
+- `src/MinimalMusicKeyboard/Interfaces/IAudioEngine.cs` — Added `InstrumentLoadFailed` event
+- `src/MinimalMusicKeyboard/Views/SettingsWindow.xaml.cs` — Subscribed to `InstrumentLoadFailed`, improved button messaging
+
+**Invariants:**
+- Audio render thread guard `backend.IsReady` preserved
+- `Volatile.Write`/`Volatile.Read` pattern unchanged
+- No allocations on audio render path
+- `BridgeFaulted` semantics unchanged for IPC-failure cases
+
+**Related decision records:** `.squad/decisions.md` Section "Session: 2026-03-12 — VST3 Load Race Condition Fix"
+
+

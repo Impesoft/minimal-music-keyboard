@@ -1,4 +1,5 @@
 using MinimalMusicKeyboard.Models;
+using System;
 
 namespace MinimalMusicKeyboard.Interfaces;
 
@@ -8,6 +9,13 @@ namespace MinimalMusicKeyboard.Interfaces;
 /// </summary>
 public interface IAudioEngine : IDisposable
 {
+/// <summary>
+    /// Raised when an instrument fails to load (e.g. VST3 bridge missing or plugin rejected).
+    /// The string argument is a human-readable error message.
+    /// May be raised on a background thread — subscribers must marshal to the UI thread if needed.
+    /// </summary>
+    event EventHandler<string>? InstrumentLoadFailed;
+
     /// <summary>Trigger a note-on event (key pressed). Thread-safe — callable from MIDI callback.</summary>
     void NoteOn(int channel, int note, int velocity);
 

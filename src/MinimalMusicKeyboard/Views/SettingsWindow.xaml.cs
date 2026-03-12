@@ -83,6 +83,9 @@ public sealed partial class SettingsWindow : Window
         // the window is visible or hidden.
         _switcher.ActiveInstrumentChanged += OnActiveInstrumentChanged;
 
+        // Surface VST3 load failures to the user via a dialog.
+        _audioEngine.InstrumentLoadFailed += OnInstrumentLoadFailed;
+
         PopulateMidiDevices();
         PopulateAudioOutputDevices();
         PopulateButtonMappings();
@@ -96,6 +99,7 @@ public sealed partial class SettingsWindow : Window
     {
         StopListening();
         _switcher.ActiveInstrumentChanged -= OnActiveInstrumentChanged;
+        _audioEngine.InstrumentLoadFailed -= OnInstrumentLoadFailed;
         _forceClose = true;
         Close();
     }
@@ -107,6 +111,24 @@ public sealed partial class SettingsWindow : Window
         StopListening();         // ensure MIDI listener doesn't leak if window is dismissed mid-listen
         args.Cancel = true;      // intercept normal user close
         AppWindow.Hide();        // hide to tray instead
+    }
+
+    private void OnInstrumentLoadFailed(object? sender, string errorMessage)
+    {
+        // This event fires on a background thread — dispatch to UI thread.
+        DispatcherQueue.TryEnqueue(async () =>
+        {
+            if (Content?.XamlRoot is null) return; // window not visible/loaded
+
+            var dialog = new ContentDialog
+            {
+                Title          = "VST3 Load Failed",
+                Content        = errorMessage,
+                CloseButtonText = "OK",
+                XamlRoot       = Content.XamlRoot,
+            };
+            try { await dialog.ShowAsync(); } catch { /* window closed mid-dialog */ }
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -479,15 +501,26 @@ public sealed partial class SettingsWindow : Window
                     {
                         await capable.OpenEditorAsync();
                     }
-                    else
+                    else if (backend is Vst3BridgeBackend vst3 && !vst3.IsReady)
                     {
-                        // Show a simple message that editor is not available
+                        // Backend is assigned but still loading — give the user a clear message.
                         var dialog = new ContentDialog
                         {
-                            Title = "Editor Not Available",
-                            Content = "The current instrument does not support an editor window, or the VST3 plugin is not loaded.",
+                            Title           = "VST3 Plugin Still Loading",
+                            Content         = "The VST3 plugin is still loading. Please wait a moment and try again.",
                             CloseButtonText = "OK",
-                            XamlRoot = this.Content.XamlRoot
+                            XamlRoot        = this.Content.XamlRoot,
+                        };
+                        await dialog.ShowAsync();
+                    }
+                    else
+                    {
+                        var dialog = new ContentDialog
+                        {
+                            Title           = "Editor Not Available",
+                            Content         = "The current instrument does not support an editor window, or the VST3 plugin has not loaded successfully.",
+                            CloseButtonText = "OK",
+                            XamlRoot        = this.Content.XamlRoot,
                         };
                         await dialog.ShowAsync();
                     }
@@ -497,10 +530,10 @@ public sealed partial class SettingsWindow : Window
                     Debug.WriteLine($"[SettingsWindow] Failed to open VST3 editor: {ex.Message}");
                     var dialog = new ContentDialog
                     {
-                        Title = "Error",
-                        Content = $"Failed to open editor: {ex.Message}",
+                        Title           = "Error",
+                        Content         = $"Failed to open editor: {ex.Message}",
                         CloseButtonText = "OK",
-                        XamlRoot = this.Content.XamlRoot
+                        XamlRoot        = this.Content.XamlRoot,
                     };
                     await dialog.ShowAsync();
                 }

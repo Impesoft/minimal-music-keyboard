@@ -260,3 +260,71 @@
 - Message loop cleanup: Use `PostMessageW(hwnd, WM_QUIT, 0, 0)` to gracefully exit `GetMessageW()` loop, then join the thread to ensure it completes before destroying resources.
 
 **Status:** Code complete. C++ build deferred pending VST3 SDK setup.
+
+### VST3 Editor Availability Bug Investigation (2026-03-19)
+
+**Problem:** User reports "Editor not available or vst not loaded" when trying to open VST3 editor GUI after bridge rebuild.
+
+**Root cause analysis:**
+
+1. **Race condition in AudioEngine.HandleVst3Instrument():**
+   - Line 187 of `AudioEngine.cs` immediately assigns `_vst3Backend` as the active backend via `Volatile.Write()`
+   - Line 188 calls `_vst3Backend.LoadAsync(instrument)` as fire-and-forget (`_ =`)
+   - `LoadAsync` is async and takes time (start process → connect pipe → send load → wait for ack)
+   - If user clicks "Open Editor" button before `LoadAsync` completes, `SupportsEditor` returns false because `_isReady` is still false
+   - **Location:** `src/MinimalMusicKeyboard/Services/AudioEngine.cs:187-188`
+
+2. **Silent failure when bridge.exe is missing:**
+   - `LoadAsync` returns early at line 213 if `mmk-vst3-bridge.exe` doesn't exist
+   - Backend is already assigned as active, but `_isReady` never gets set to true
+   - User sees "not loaded" message even though bridge should be present
+   - **Location:** `src/MinimalMusicKeyboard/Services/Vst3BridgeBackend.cs:206-214`
+
+3. **Error message origin:**
+   - "Editor not available or vst not loaded" generated at `SettingsWindow.xaml.cs:487-488`
+   - Triggered when `SupportsEditor` property returns false (which is just `_isReady`)
+   - **Location:** `src/MinimalMusicKeyboard/Views/SettingsWindow.xaml.cs:473-493`
+
+**Bridge C++ code analysis:**
+- `Load()` function (audio_renderer.cpp:34-169) — Correctly activates buses and initializes plugin
+- `OpenEditor()` function (audio_renderer.cpp:423-500) — Properly checks for `controller_` and creates Win32 window
+- `bridge.cpp` "openEditor" IPC handler (lines 107-118) — Correctly calls `OpenEditor()` and sends ack with error
+- All bridge-side code appears correct; problem is purely on C# side timing/state management
+
+**Fix recommendations:**
+
+1. **For the race condition:** Either:
+   - a) Make `HandleVst3Instrument` await `LoadAsync` before assigning `_activeBackend` (but this blocks MIDI thread)
+   - b) Defer `_activeBackend` assignment until `LoadAsync` completes (better — keep fire-and-forget pattern)
+   - c) Add "loading" state to UI to disable editor button until ready
+
+2. **For silent failure:** Add logging or error notification when bridge.exe is missing so user knows why VST3 isn't working
+
+**VST3 load/editor protocol confirmed correct:**
+- Bridge sends `{"ack":"load_ack","ok":true}` on successful load (bridge.cpp:68-74)
+- C# waits for ack and parses correctly (Vst3BridgeBackend.cs:283-290)
+- Only after successful ack does C# set `_isReady = true` (line 302)
+- Editor IPC command follows same pattern with `{"ack":"editor_opened","ok":...}` (bridge.cpp:112-116)
+- No path issues found — VST3 path is passed directly from C# to bridge in load command
+
+### VST3 Editor Availability — Race Condition Resolved (2026-03-12)
+
+**Status:** FIXED by Jet  
+**Problem:** User received "Editor not available" error when clicking "Open VST3 Editor" button, despite bridge being freshly rebuilt and functional.
+
+**Diagnosis complete** (2026-03-19 analysis):
+- Root cause: `AudioEngine.HandleVst3Instrument()` assigned `_activeBackend` immediately before async `LoadAsync()` completed
+- Race window: If user clicked "Open Editor" during loading, `SupportsEditor` returned false (because `_isReady` was still false)
+- Secondary issue: Missing bridge.exe caused silent failure with no user feedback
+
+**Bridge analysis:** Bridge C++ code was correct; bug was purely C# side (timing/state management).
+
+**Solution implemented by Jet (2026-03-12):**
+1. Deferred backend assignment until `LoadAsync()` completes and `_isReady == true`
+2. Bridge-missing now fires `BridgeFaulted` event instead of silent return
+3. New `InstrumentLoadFailed` event propagates errors to UI via `ContentDialog`
+4. Editor button shows "VST3 Plugin Still Loading" during load phase
+5. Build verified: 0 errors
+
+**Related decision records:** `.squad/decisions.md` Section "Session: 2026-03-12 — VST3 Load Race Condition Fix"
+

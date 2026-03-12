@@ -4,6 +4,76 @@ _Append-only. Managed by Scribe. Agents write to .squad/decisions/inbox/ — Scr
 
 <!-- Entries appended below in reverse-chronological order -->
 
+## Session: 2026-03-12 — VST3 Load Race Condition Fix
+
+### Faye: VST3 Editor Availability Race Condition (Diagnosed)
+
+**Status:** Bug Identified  
+**Priority:** High  
+**Filed by:** Faye (Audio Dev)  
+**Date:** 2026-03-19
+
+**Problem:** User reports "Editor not available or vst not loaded" error when clicking "Open VST3 Editor" button, even though the bridge was freshly rebuilt and should be working.
+
+**Root Cause:** Race condition in `AudioEngine.HandleVst3Instrument()`:
+- `_activeBackend` assigned to `_vst3Backend` immediately
+- `LoadAsync()` runs asynchronously as fire-and-forget
+- If user clicks "Open Editor" during loading phase, `SupportsEditor` is false because `_isReady` is still false
+- Settings window shows "Editor not available" dialog despite bridge being present
+
+**Secondary Issue:** When bridge.exe is missing, `LoadAsync()` returns early with only `Debug.WriteLine`, leaving backend assigned-but-never-ready indefinitely.
+
+**Bridge C++ Analysis:** Bridge code is correct; bug is purely on C# side.
+
+**Proposed Solution (Option A - Recommended):** Defer backend assignment until load completes.
+- Move `Volatile.Write(_activeBackend, _vst3Backend)` into continuation after `LoadAsync()` completes successfully
+- Preserves fire-and-forget pattern; backend only becomes active when ready
+- Ensures `SupportsEditor` is accurate when backend becomes active
+
+---
+
+### Jet: VST3 Backend Race Condition Fix (Implemented)
+
+**Author:** Jet (Windows Dev)  
+**Date:** 2026-03-12  
+**Status:** IMPLEMENTED — Build verified (0 errors)
+
+**Implementation Summary:**
+
+1. **Delayed Backend Assignment** (`AudioEngine.cs`)
+   - Removed `Volatile.Write(ref _activeBackend, _vst3Backend)` from `HandleVst3Instrument()`
+   - Added private `async Task LoadVst3BackendAsync(InstrumentDefinition)` method
+   - `Volatile.Write` now executes only after `await _vst3Backend.LoadAsync()` completes and `_vst3Backend.IsReady == true`
+   - During loading, `_activeBackend` remains on previous backend (SoundFont), audio not disrupted
+
+2. **Bridge Failure Notification** (`Vst3BridgeBackend.cs`)
+   - Changed bridge-exe-missing early-return to call `BridgeFaulted?.Invoke(...)` before returning
+   - Subscribers notified even though bridge was never started
+
+3. **Load Failure Event** (`IAudioEngine.cs`, `AudioEngine.cs`)
+   - Added `event EventHandler<string>? InstrumentLoadFailed` to `IAudioEngine` interface
+   - `AudioEngine` constructor subscribes to `_vst3Backend.BridgeFaulted` and re-raises as `InstrumentLoadFailed`
+   - `SettingsWindow` subscribes on construction, unsubscribes in `ForceClose()`
+   - Handler dispatches to UI thread and shows `ContentDialog`
+
+4. **Improved Button Feedback** (`SettingsWindow.xaml.cs`)
+   - When active backend is `Vst3BridgeBackend` but not yet ready, button shows "VST3 Plugin Still Loading"
+   - Distinguishes loading state from permanent unavailability
+
+**Files Modified:**
+- `src/MinimalMusicKeyboard/Services/AudioEngine.cs`
+- `src/MinimalMusicKeyboard/Services/Vst3BridgeBackend.cs`
+- `src/MinimalMusicKeyboard/Interfaces/IAudioEngine.cs`
+- `src/MinimalMusicKeyboard/Views/SettingsWindow.xaml.cs`
+
+**Invariants Preserved:**
+- Audio render thread checks `backend.IsReady` before processing
+- `Volatile.Write`/`Volatile.Read` pattern unchanged
+- No allocations on audio render path
+- `BridgeFaulted` event semantics unchanged for IPC-failure path
+
+---
+
 ## Session: 2026-03-11 — Batch 6: Phase 3 & 4 Completion
 
 ### Faye: Phase 3 Complete — mmk-vst3-bridge Native Project

@@ -33,6 +33,9 @@ public sealed class AudioEngine : IAudioEngine
     private readonly Vst3BridgeBackend _vst3Backend;
     private IInstrumentBackend? _activeBackend;
 
+    /// <inheritdoc/>
+    public event EventHandler<string>? InstrumentLoadFailed;
+
     // ── MIDI command queue (MIDI thread → audio thread, lock-free) ────────────
     private readonly ConcurrentQueue<MidiCommand> _commandQueue = new();
 
@@ -49,6 +52,8 @@ public sealed class AudioEngine : IAudioEngine
     {
         _sfBackend = new SoundFontBackend(PlaceholderSoundFontPath);
         _vst3Backend = new Vst3BridgeBackend();
+        _vst3Backend.BridgeFaulted += (_, args) =>
+            InstrumentLoadFailed?.Invoke(this, args.Reason);
         _mixer = new MixingSampleProvider(WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels))
         {
             ReadFully = true
@@ -182,10 +187,25 @@ public sealed class AudioEngine : IAudioEngine
             return;
         }
 
-        // Silence current notes and switch to VST3 backend
+        // Silence current notes. The active backend stays unchanged until loading succeeds.
         _commandQueue.Enqueue(new MidiCommand(MidiCommandType.NoteOffAll, 0, 0, 0));
-        Volatile.Write(ref _activeBackend, _vst3Backend);
-        _ = _vst3Backend.LoadAsync(instrument);
+        _ = LoadVst3BackendAsync(instrument);
+    }
+
+    private async Task LoadVst3BackendAsync(InstrumentDefinition instrument)
+    {
+        await _vst3Backend.LoadAsync(instrument).ConfigureAwait(false);
+
+        if (_vst3Backend.IsReady)
+        {
+            Volatile.Write(ref _activeBackend, _vst3Backend);
+        }
+        else
+        {
+            // LoadAsync completed but IsReady is false and BridgeFaulted was not raised
+            // (e.g. non-VST3 instrument type passed — shouldn't normally happen, but guard anyway).
+            Debug.WriteLine($"[AudioEngine] VST3 backend failed to become ready for '{instrument.DisplayName}'.");
+        }
     }
 
     /// <inheritdoc/>

@@ -83,24 +83,52 @@ bool AudioRenderer::Load(const std::string& pluginPath, const std::string& prese
         return false;
     }
 
-    // Query IEditController from component (may be null for some plugins)
-    Steinberg::Vst::IEditController* controllerRaw = nullptr;
-    if (component_->queryInterface(Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&controllerRaw)) == Steinberg::kResultOk)
+    // Obtain IEditController — VST3 supports two patterns:
+    //   1. Single-object: component directly implements IEditController (queryInterface succeeds)
+    //   2. Separate-object: component and controller are distinct classes; get the controller
+    //      class ID via getControllerClassId() and instantiate it from the factory.
+    // We try (1) first, then fall back to (2). Either way, controller_ may remain null
+    // for plugins that genuinely have no GUI.
     {
-        controller_ = Steinberg::owned(controllerRaw);
-        controller_->initialize(hostApp_);
-
-        // Connect component and controller via IConnectionPoint if supported
-        Steinberg::Vst::IConnectionPoint* compCP = nullptr;
-        Steinberg::Vst::IConnectionPoint* ctrlCP = nullptr;
-        if (component_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&compCP)) == Steinberg::kResultOk &&
-            controller_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&ctrlCP)) == Steinberg::kResultOk)
+        Steinberg::Vst::IEditController* controllerRaw = nullptr;
+        if (component_->queryInterface(Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&controllerRaw)) == Steinberg::kResultOk)
         {
-            compCP->connect(ctrlCP);
-            ctrlCP->connect(compCP);
+            // Pattern 1: component IS the controller
+            controller_ = Steinberg::owned(controllerRaw);
         }
-        if (compCP) compCP->release();
-        if (ctrlCP) ctrlCP->release();
+        else
+        {
+            // Pattern 2: separate controller class
+            Steinberg::TUID controllerCID{};
+            if (component_->getControllerClassId(controllerCID) == Steinberg::kResultOk)
+            {
+                Steinberg::FUID controllerFUID = Steinberg::FUID::fromTUID(controllerCID);
+                if (controllerFUID.isValid())
+                {
+                    controllerRaw = nullptr;
+                    factory.get()->createInstance(controllerCID, Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&controllerRaw));
+                    if (controllerRaw)
+                        controller_ = Steinberg::owned(controllerRaw);
+                }
+            }
+        }
+
+        if (controller_)
+        {
+            controller_->initialize(hostApp_);
+
+            // Connect component and controller via IConnectionPoint if supported
+            Steinberg::Vst::IConnectionPoint* compCP = nullptr;
+            Steinberg::Vst::IConnectionPoint* ctrlCP = nullptr;
+            if (component_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&compCP)) == Steinberg::kResultOk &&
+                controller_->queryInterface(Steinberg::Vst::IConnectionPoint::iid, reinterpret_cast<void**>(&ctrlCP)) == Steinberg::kResultOk)
+            {
+                compCP->connect(ctrlCP);
+                ctrlCP->connect(compCP);
+            }
+            if (compCP) compCP->release();
+            if (ctrlCP) ctrlCP->release();
+        }
     }
 
     Steinberg::Vst::IAudioProcessor* processorRaw = nullptr;

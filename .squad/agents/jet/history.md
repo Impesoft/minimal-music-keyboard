@@ -457,4 +457,23 @@ Added `<remarks>Called from the audio thread only. Do not call from the MIDI cal
 
 **Related decision records:** `.squad/decisions.md` Section "Session: 2026-03-12 — VST3 Load Race Condition Fix"
 
+### VST3 Editor Diagnostics Surface (2026-03-12)
 
+**Decision:** Expose exact VST3 editor-availability diagnostics through IAudioEngine to managed UI instead of generic fallback.
+
+**Why:** Bridge already computes failure reason (stage + error code); UI should respect that rather than replace with generic message when backend is temporarily inactive during VST3 load.
+
+**Implementation:**
+- Added IAudioEngine.GetVst3EditorAvailabilityDescription() method
+- Implemented in AudioEngine by forwarding Vst3BridgeBackend.EditorAvailabilityDescription
+- Updated SettingsWindow UI logic:
+  - Display exact diagnostic after load success with no editor support
+  - Show exact diagnostic in "Editor Not Available" dialog
+  - Distinguish "still loading" (keyed off _loadingVst3SlotIndex) from permanent unavailability
+  - Stop unconditionally re-enabling button in finally block
+
+**Result:** OB-Xd and other plugins now show specific failure stages (e.g., "IPlugView::attached() failed") instead of generic "Editor Not Available". Improves debuggability.
+
+**Commit:** bcbe000
+
+---

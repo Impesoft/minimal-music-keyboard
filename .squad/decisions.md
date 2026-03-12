@@ -2002,3 +2002,52 @@ Propagate structured stage-specific diagnostics instead of generic failure. For 
 ### Result
 
 Settings window now shows exact reason when VST3 editor unavailable (e.g., "IPlugView::attached() returned kNotImplemented" or "Win32 host window creation failed: E_FAIL"). Enabled troubleshooting for OB-Xd and other single-object plugins.
+
+## Session: 2026-03-12 — VST3 Editor Diagnostics Surface & OB-Xd Host Fix
+
+### Context
+Two complementary VST3 improvements to resolve OB-Xd and other plugins' editor compatibility issues:
+1. Managed UI was showing generic fallbacks instead of exact bridge diagnostics
+2. Native bridge lacked standard VST3 host pattern for controller state synchronization
+
+### Decision: Surface Exact Diagnostics (Jet)
+Expose structured VST3 editor-availability diagnostics through IAudioEngine so managed UI reflects exact failure reasons (stage + error code) instead of generic fallback.
+
+### Decision: Sync Controller State (Faye)
+Implement standard VST3 host pattern: after IEditController::initialize(), copy component state into controller with setComponentState(). Re-sync after preset loads.
+
+### Why
+- Bridge already computes exact diagnostics; UI should not replace with fallback due to transient backend state
+- Many plugins (OB-Xd, others with split controller) rely on standard state synchronization pattern
+- Diagnostics enable troubleshooting; state sync ensures editor/component consistency
+
+### Implementation
+**Diagnostics (Jet):**
+- Added IAudioEngine.GetVst3EditorAvailabilityDescription()
+- Updated SettingsWindow to display exact failure reason and distinguish "loading" from "failed"
+
+**State Sync (Faye):**
+- Added component→controller sync in udio_renderer.cpp using Steinberg::MemoryStream
+- Re-sync after preset loads
+- Added memorystream.cpp to CMakeLists.txt
+
+### Verification
+- Managed Release build: ✓ passed
+- Native Release build: ✓ passed
+- OB-Xd editor now receives consistent controller state
+- UI diagnostics show exact failure stages
+
+### Files Modified
+- src/MinimalMusicKeyboard/Services/AudioEngine.cs
+- src/MinimalMusicKeyboard/Services/Vst3BridgeBackend.cs
+- src/MinimalMusicKeyboard/Interfaces/IAudioEngine.cs
+- src/MinimalMusicKeyboard/Views/SettingsWindow.xaml.cs
+- src/mmk-vst3-bridge/src/audio_renderer.cpp
+- src/mmk-vst3-bridge/CMakeLists.txt
+
+### Commits
+- bcbe000 — Improve VST3 editor diagnostics
+- f3950e5 — Fix OB-Xd VST3 controller sync
+
+### Result
+OB-Xd VST3 support now robust across UI transparency and host state management. Editor loading state properly distinguished from permanent unavailability.

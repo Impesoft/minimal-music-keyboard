@@ -409,3 +409,24 @@
 
 **Status:** All builds clean, tests passing. Commit 16482e7.
 
+### OB-Xd VST3 Host-Side Controller State Sync (2026-03-12)
+
+**Decision:** Implement standard VST3 host pattern for split component/controller plugins: after IEditController::initialize(), copy component state into controller with setComponentState(). Re-sync after preset loads.
+
+**Why:** OB-Xd and other split-architecture plugins expect host to synchronize state between component and controller. Bridge was missing this step, causing editor to start with stale state. Also ensures preset-applied changes reflect in editor.
+
+**Implementation:**
+- Added component→controller sync in src/mmk-vst3-bridge/src/audio_renderer.cpp using Steinberg::MemoryStream
+- Sync triggered after controller initialization succeeds
+- Re-sync triggered after successful .vstpreset load (via setComponentState())
+- Added public.sdk/source/common/memorystream.cpp to CMakeLists.txt for linking
+
+**Result:** 
+- Native Release build: ✓ passed
+- Managed Release build: ✓ passed (2 pre-existing warnings)
+- OB-Xd editor now receives consistent state matching component
+- Preset changes immediately reflected in controller/editor UI
+
+**Commit:** f3950e5
+
+---

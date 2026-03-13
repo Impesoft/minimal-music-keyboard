@@ -25,7 +25,19 @@
 
 ## Learnings
 
-### 2026-03-13 — OB-Xd shipped bridge parity check (Ward Impe task)
+## Historical Summary (2026-03-01 through 2026-03-12)
+
+**Test framework established:** xUnit 2.7 + Moq 4.20 + FluentAssertions 6.12. Test project targets `net8.0-windows10.0.22621.0`. Interface-first scaffolding with production namespaces defined first.
+
+**Disposal verification patterns:** WeakReference + GC.Collect(2, Forced) required for leak detection. `[MethodImpl(NoInlining)]` essential to prevent JIT from keeping hidden roots. Event handler leaks primary risk — verification pattern: subscribe to events, dispose all objects, check no subscribers remain.
+
+**InstrumentCatalog testing:** Real JSON files in temp directories (not mocks). Catches serialization bugs. CatalogLoader test helper captures common patterns.
+
+**VST3 bridge integration tests:** Created minimal harness using named pipe + MMF (same contract as production Vst3BridgeBackend). Validates native bridge independently of WinUI app. Reusable pattern for sidecar process verification.
+
+**Zero automated test coverage:** `dotnet test MinimalMusicKeyboard.sln` discovers 0 tests. No regression suite covering VST3/UI behavior — critical gap flagged for team.
+
+<!-- append new learnings below -->
 
 **Deployment parity verified:** `src\MinimalMusicKeyboard\MinimalMusicKeyboard.csproj` now copies `src\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe` into the Debug app output, and the shipped Debug bridge at `src\MinimalMusicKeyboard\bin\x64\Debug\net10.0-windows10.0.22621.0\win-x64\mmk-vst3-bridge.exe` matched the rebuilt native bridge byte-for-byte (same size, timestamp, and SHA-256) after `dotnet build -c Debug -p:Platform=x64`.
 

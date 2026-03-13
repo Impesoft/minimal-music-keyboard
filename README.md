@@ -4,6 +4,11 @@ Minimal Music Keyboard is a small Windows tray app for playing MIDI keyboards an
 
 It supports both **SF2 soundfonts** and **VST3 instruments**, lets you map **8 instrument slots** to MIDI buttons or pads, and keeps the app out of the way in the system tray until you need it.
 
+> [!WARNING]
+> A **fresh clone of this repository will not have working VST3 support yet**.
+>
+> VST3 support depends on a separate native executable, `mmk-vst3-bridge.exe`, which is built from `src\mmk-vst3-bridge` and is **not** committed to git. The Steinberg VST3 SDK is also **not** included in this repository. After cloning, SF2 support can work once you build the managed app, but VST3 support will not work until you install the SDK and build the bridge.
+
 ## Features
 
 - Windows tray app with on-demand settings window
@@ -42,23 +47,86 @@ The app stores settings under `%LOCALAPPDATA%\MinimalMusicKeyboard`.
   - vcpkg
   - Visual Studio C++ build tools / CMake
 
+### Fresh clone note
+
+If you only run:
+
+```powershell
+dotnet build MinimalMusicKeyboard.sln -c Release
+```
+
+the app itself will build, but **VST3 support may still be unavailable** because the native bridge has not been produced yet.
+
+The managed project expects the bridge binary at:
+
+```text
+src\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe
+```
+
+That path is wired in `src\MinimalMusicKeyboard\MinimalMusicKeyboard.csproj` via the `BridgeSource` property. During the managed build, the app tries to copy that bridge into its output directory. If the file is missing, the build emits a warning and the resulting app build will only be usable for SF2 instruments.
+
 ### 1. Build the native VST3 bridge
 
 The managed app can run SF2-only without the native bridge, but **VST3 support requires it**.
 
-Clone the Steinberg SDK to:
+#### 1.1 Clone the Steinberg VST3 SDK
+
+From the repository root, clone the Steinberg SDK into `extern\vst3sdk`:
 
 ```powershell
 git clone https://github.com/steinbergmedia/vst3sdk.git extern\vst3sdk --recurse-submodules
 ```
 
-Then build the bridge:
+If you prefer a different location, that is fine, but you must pass the correct path to CMake through `-DVST3_SDK_ROOT=...`.
+
+#### 1.2 Install native dependencies
+
+The bridge also uses packages resolved through `vcpkg`.
+
+At minimum, make sure:
+
+- `vcpkg` is installed
+- the Visual Studio C++ toolchain is installed
+- CMake is available
+
+If needed:
+
+```powershell
+vcpkg install
+```
+
+#### 1.3 Configure the bridge
+
+From the repository root:
 
 ```powershell
 cd src\mmk-vst3-bridge
 cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<path>\vcpkg\scripts\buildsystems\vcpkg.cmake -DVST3_SDK_ROOT=..\..\extern\vst3sdk
+```
+
+If your SDK is elsewhere, replace `..\..\extern\vst3sdk` with the actual path.
+
+#### 1.4 Build the bridge
+
+```powershell
 cmake --build build --config Release
 ```
+
+Expected output:
+
+```text
+src\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe
+```
+
+#### 1.5 Build the managed app after the bridge exists
+
+Once the bridge exists, build the app:
+
+```powershell
+dotnet build MinimalMusicKeyboard.sln -c Release
+```
+
+The managed project will then auto-deploy the bridge into the app output directory, including a versioned bridge copy and a `mmk-vst3-bridge.path` manifest file used at runtime.
 
 ### 2. Build the app
 
@@ -68,7 +136,7 @@ From the repository root:
 dotnet build MinimalMusicKeyboard.sln -c Release
 ```
 
-The app project copies the built `mmk-vst3-bridge.exe` into the output directory automatically when the native bridge exists.
+The app project copies the built `mmk-vst3-bridge.exe` into the output directory automatically when the native bridge exists. If it does not exist, the app still builds, but VST3 instruments will not load.
 
 ### 3. Run tests
 
@@ -99,6 +167,17 @@ tests\                             Test projects and test assets
 - The app is designed for lightweight direct use, not as a full DAW replacement.
 - VST3 support depends on the native bridge being built and present beside the managed app.
 - The current test command succeeds, but the test project still reports **0 discovered tests**.
+
+## Troubleshooting VST3 on a fresh clone
+
+If users clone the repo and immediately try VST3, the most likely problem is one of these:
+
+1. `extern\vst3sdk` has not been cloned yet
+2. `src\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe` does not exist yet
+3. only the managed app was built, not the native bridge
+4. the bridge was built in a different configuration or location than the managed project expects
+
+If that happens, rebuild the native bridge first, then rebuild the managed solution.
 
 ## Documentation
 

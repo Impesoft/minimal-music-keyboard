@@ -450,3 +450,26 @@
 **Commit:** f3950e5
 
 ---
+
+---
+
+## Session: VST3 Load-Time Diagnostics Fix (2026-03-13T08:52Z)
+
+**Outcomes:** Committed c2e6662. Fixed deployment + protocol hardening for VST3 editor diagnostics.
+
+**Key Actions:**
+- Native bridge: Guaranteed non-empty ditorDiagnostics in load_ack serialization when supportsEditor=false
+- Managed app: Updated build deploy target to copy freshly built mmk-vst3-bridge.exe from src\mmk-vst3-bridge\build\Release
+
+**What Was Happening:**
+- App's MSBuild copy path pointed to non-existent root-level mmk-vst3-bridge\build\Release
+- Stale bridge binary stayed in deployed location
+- Protocol lacked guarantee for non-empty diagnostic when editor unavailable
+
+**Verification:**
+- ✅ Native build successful
+- ✅ Managed build successful  
+- ✅ dotnet test passed
+- ✅ OB-Xd now shows real load-time diagnostic reason, not generic fallback
+
+**Related:** OB-Xd VST3 Host Compatibility Fix (2026-03-12), earlier in history

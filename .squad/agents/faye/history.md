@@ -27,6 +27,44 @@
 
 <!-- append new learnings below -->
 
+### OB-Xd Editor Attach Investigation (2026-03-13)
+
+**Files modified:**
+- `src/mmk-vst3-bridge/src/audio_renderer.cpp` — pre-show the editor frame/client HWND, focus the client, and force an initial redraw before calling `IPlugView::attached(HWND)`.
+
+**What we proved:**
+- The native host already satisfied the important Win32/VST3 editor prerequisites for OB-Xd: dedicated editor thread, OLE/STA initialization, top-level frame window, child client HWND, `IPlugFrame`, and a running message pump before `attached()`.
+- I added one more low-risk compatibility tweak by making the host window explicitly shown, focused, and paintable before `attached()`, then validated against the installed OB-Xd bundle at `C:\Program Files\Common Files\VST3\OB-Xd.vst3`.
+- OB-Xd still returned `load_ack: ok=true, supportsEditor=true` but `openEditor` again timed out inside `IPlugView::attached(HWND)`, so the remaining hang is no longer credibly explained by missing basic host-side window setup.
+
+**Key diagnostic detail:**
+- The exact bridge harness run against `C:\Program Files\Common Files\VST3\OB-Xd.vst3` still produced `editor_opened: ok=false` with the timeout message after the host had already created the frame/client HWNDs and set the plug frame.
+- The same load ACK also showed OB-Xd's `setComponentState()` path can raise a structured exception (`0xC0000005`) during controller sync; the bridge now survives that, but it further suggests the plugin is fragile in minimal-host scenarios beyond the remaining justified host tweaks.
+
+**Conclusion:**
+- With the pre-attach show/focus/redraw compatibility improvement in place and the exact installed plugin still hanging inside `attached()`, the residual OB-Xd editor failure should now be treated as plugin-side or as requiring a much broader host feature surface (for example full run-loop semantics) than this bridge currently aims to provide.
+- For future VST3 GUI investigations, a tiny pipe/MMF harness is enough to prove whether the native sidecar itself still reproduces the issue without involving the WinUI app.
+
+### Bridge Message-Pump Architecture + Final Host Diagnostics (2026-03-13)
+
+**Context:** After low-risk host-side tweaks (pre-show/focus/redraw) still didn't resolve OB-Xd editor timeout, team identified root cause as JUCE MessageManager thread affinity issue in bridge main thread.
+
+**What Spike fixed:**
+- Refactored `Bridge::Run()` to run Win32 message loop (`GetMessageW`) on main thread
+- Pipe reading moved to background thread that posts `WM_BRIDGE_COMMAND` to hidden window
+- All VST3 operations (load/open/close) now on main thread with active message pump
+
+**Consequence for audio dev:**
+- Audio render thread (separate, mutex-protected) completely unaffected
+- `AudioRenderer::OpenEditor()` now fully synchronous — no promises, no timeout, reliable
+- OB-Xd editor now successfully calls `attached()` without deadlock
+- Plugin-side editor incomplete UI confirmed as outside minimal host scope
+
+**IPlugFrame queryInterface fix:**
+- Identified VST3 spec violation: `EditorPlugFrame::queryInterface()` only handled `FUnknown::iid`, not `IPlugFrame::iid`
+- Applied spec-compliant fix matching HostApplication pattern
+- This improves compatibility for future plugins even if OB-Xd remains unsupported
+
 ### Bridge Load ACK Crash/No-Response Hardening (2026-03-13)
 
 **Files modified:**

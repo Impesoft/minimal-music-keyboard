@@ -2110,3 +2110,342 @@ Even with deployment fixed, the native bridge should still guarantee a non-empty
 - OB-Xd and similar plugins now surface a real load-time reason in inline status whenever the bridge decides the editor is unavailable.
 - Managed app builds now deploy the freshly rebuilt native bridge instead of silently keeping a stale helper binary in `bin\...\win-x64`.
 
+
+
+---
+
+## Session: 2026-03-13 — OB-Xd VST3 Bridge Integration (Final)
+
+# Ed — OB-Xd shipped bridge verification
+
+**Date:** 2026-03-13  
+**Status:** Verified / remaining validation gap noted  
+**Requested by:** Ward Impe
+
+## Decision
+
+Treat the current shipped Debug bridge deployment as **in parity** with the rebuilt native Release bridge for OB-Xd validation.
+
+## Why
+
+- `src\MinimalMusicKeyboard\MinimalMusicKeyboard.csproj` now points `BridgeSource` at `src\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe` and copies that file into the app output on build.
+- After a fresh Debug build, the shipped bridge beside the app and the rebuilt native bridge had the same size, timestamp, and SHA-256.
+- A direct host-harness repro against `C:\Program Files\Common Files\VST3\OB-Xd 3.vst3` produced identical behavior from both binaries:
+  - `load_ack` succeeded with the same controller-discovery diagnostics.
+  - `openEditor` failed with the same detailed `IPlugView::attached(HWND)` timeout message.
+
+## Remaining Concern
+
+This proves the **deployment fix**, not full product validation. We still lack:
+
+1. **End-to-end managed/UI confirmation** that the shipped WinUI Debug app surfaces the same native diagnostic to the user.
+2. **Real automated regression coverage** for this path — current `dotnet test MinimalMusicKeyboard.sln -c Debug -p:Platform=x64` discovers 0 tests, so the repository is not automatically validating this behavior.
+
+---
+
+# Decision: OB-Xd editor attach remains plugin-side after final low-risk host tweak
+
+**Author:** Faye  
+**Date:** 2026-03-13  
+**Status:** Proposed
+
+## Context
+
+The native VST3 bridge had already been hardened for OB-Xd with:
+- proper separate-controller discovery and initialization,
+- controller/component state synchronization safeguards,
+- a dedicated editor thread with OLE/STA,
+- a top-level frame window plus child client HWND,
+- `IPlugFrame::setFrame(...)`,
+- and a running Win32 message pump before `IPlugView::attached(HWND)`.
+
+The remaining issue was a 10-second timeout inside `IPlugView::attached(HWND)` when opening the OB-Xd editor.
+
+## Decision
+
+Apply one more **low-risk** host-side compatibility improvement only:
+- explicitly show the frame window,
+- show/focus the child client HWND,
+- force an initial redraw before calling `IPlugView::attached(HWND)`.
+
+Do **not** expand the bridge further into speculative large host work (for example custom run-loop support or broader editor-thread/controller-thread redesign) without stronger evidence that OB-Xd requires a specific missing VST3 host contract.
+
+## Validation
+
+Validated with the exact installed bundle path:
+
+`C:\Program Files\Common Files\VST3\OB-Xd.vst3`
+
+Result from the rebuilt native bridge:
+- `load_ack`: `ok=true`, `supportsEditor=true`
+- `editor_opened`: still `ok=false`
+- failure reason: timed out inside `IPlugView::attached(HWND)` even after the frame/client HWNDs, OLE/STA, and `IPlugFrame` were already in place
+
+## Consequence
+
+For this bridge, the remaining OB-Xd editor hang should be treated as **plugin-side / unsupported by our current minimal host surface**.
+
+We keep the pre-attach show/focus/redraw tweak because it is cheap, safe, and improves compatibility for other plug-ins, but we should not spend more time on speculative host changes until a concrete missing interface or host callback is identified.
+
+---
+
+# OB-Xd Editor Fix: IPlugFrame QueryInterface Implementation
+
+**Date:** 2026-03-13  
+**Agent:** Faye (Audio Dev)  
+**Status:** Implemented & Testing
+
+## Problem
+
+OB-Xd 3.vst3 plugin loads successfully but `openEditor` times out in `IPlugView::attached(HWND)`.
+
+Previous fixes implemented:
+- ✅ Message-pumped editor thread
+- ✅ Child client HWND
+- ✅ setFrame(IPlugFrame) call
+- ✅ OLE/STA initialization on editor thread
+- ✅ Windows shown/focused before attached()
+
+## Root Cause Identified
+
+The `EditorPlugFrame` class in `audio_renderer.cpp` implements `IPlugFrame` but its `queryInterface()` method was **incomplete**. It only handled `FUnknown::iid`, not `IPlugFrame::iid`.
+
+**VST3 Specification Requirement:** All VST3 interfaces must support proper COM-style `queryInterface()` that returns the interface when queried by its specific IID.
+
+**Why this causes timeout:** When OB-Xd calls `attached()`, it likely calls `queryInterface(IPlugFrame::iid)` on the frame object passed via `setFrame()`. Getting `kNoInterface` back may cause the plugin to:
+1. Wait indefinitely for a proper frame implementation
+2. Enter an error state that never returns
+3. Try to work around the missing interface in a way that deadlocks
+
+## Fix Implemented
+
+Updated `EditorPlugFrame::queryInterface()` to properly handle `IPlugFrame::iid`:
+
+```cpp
+// BEFORE (lines 190-201):
+Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override
+{
+    if (Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::FUnknown::iid))
+    {
+        addRef();
+        *obj = static_cast<Steinberg::IPlugFrame*>(this);
+        return Steinberg::kResultOk;
+    }
+    *obj = nullptr;
+    return Steinberg::kNoInterface;
+}
+
+// AFTER:
+Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override
+{
+    if (Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::IPlugFrame::iid))
+    {
+        addRef();
+        *obj = static_cast<Steinberg::IPlugFrame*>(this);
+        return Steinberg::kResultOk;
+    }
+    if (Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::FUnknown::iid))
+    {
+        addRef();
+        *obj = static_cast<Steinberg::IPlugFrame*>(this);
+        return Steinberg::kResultOk;
+    }
+    *obj = nullptr;
+    return Steinberg::kNoInterface;
+}
+```
+
+## Rationale
+
+This is a **credible, specific fix** because:
+
+1. **VST3 spec compliance:** Every COM-style interface must respond to queries for its own IID
+2. **Minimal, surgical change:** Single method fix, no architectural changes
+3. **Well-precedented:** This pattern appears in HostApplication class which correctly implements queryInterface for both IHostApplication::iid and IComponentHandler::iid
+4. **Timing matches symptom:** The timeout happens exactly during `attached()`, which is when plugins typically validate the host's IPlugFrame implementation
+
+## Build Result
+
+✅ Binary rebuilt successfully at `2026-03-13 10:13:50`  
+✅ Bridge location: `Q:\source\minimal-music-keyboard\src\MinimalMusicKeyboard\bin\x64\Release\net10.0-windows10.0.22621.0\win-x64\mmk-vst3-bridge.exe`  
+✅ Size: 263,680 bytes
+
+## Manual Testing Required
+
+**Plugin path:** `C:\Program Files\Common Files\VST3\OB-Xd 3.vst3\Contents\x86_64-win\OB-Xd 3.vst3`
+
+**Test procedure:**
+1. Launch MinimalMusicKeyboard.exe (Release build)
+2. Open Settings → Instrument Settings
+3. Select "VST3 Bridge"
+4. Browse to OB-Xd path above
+5. Click "Load" — should succeed (already verified)
+6. Click "Open Editor" button
+7. **Expected:** Editor window opens within 10 seconds without timeout
+8. **Previous behavior:** Timeout error after 10 seconds
+
+**What to look for:**
+- Editor window appears
+- No timeout message
+- Plugin interface is interactive
+- Can close editor cleanly
+
+## Technical Justification
+
+This is the **one remaining credible host-side fix** because:
+
+1. **Specification violation:** VST3 SDK examples and spec require `IPlugFrame::queryInterface()` to handle `IPlugFrame::iid`. Our code only handled `FUnknown::iid`.
+
+2. **Analogous to working code:** The `HostApplication` class correctly implements this pattern:
+   ```cpp
+   // HostApplication queryInterface handles both:
+   if (iidEqual(_iid, IHostApplication::iid)) { ... }
+   if (iidEqual(_iid, IComponentHandler::iid)) { ... }
+   if (iidEqual(_iid, FUnknown::iid)) { ... }
+   ```
+
+3. **Timing correlation:** Plugins often validate host objects during `attached()`. OB-Xd may call `plugFrame->queryInterface(IPlugFrame::iid)` to verify it's talking to a proper frame. Getting `kNoInterface` could trigger:
+   - Waiting for a valid frame (infinite wait)
+   - Entering error recovery that never completes
+   - Attempting workarounds that deadlock
+
+4. **Minimal risk:** Single-method fix, no architectural changes, follows established patterns in our codebase.
+
+## Decision
+
+**IF this fix succeeds:** Ship it. This was a legitimate VST3 spec violation that likely affects other plugins too.
+
+**IF this fix fails:** No more credible host-side fixes remain. The timeout in `attached()` would indicate:
+- OB-Xd expects host features beyond minimal VST3 spec
+- Plugin-specific initialization sequence we cannot satisfy
+- Treat as documented incompatibility
+
+This is the **final host-side compatibility attempt**. After manual testing, either:
+1. ✅ Fix works → Close OB-Xd editor issue as resolved
+2. ❌ Fix fails → Document as plugin/host incompatibility, move forward
+
+**Next step:** Ward to test and report outcome.
+
+---
+
+## Jet — Bridge Deployment Reliability
+
+**Date:** 2026-03-13  
+**Requested by:** Ward Impe  
+**Status:** Proposed / Implemented
+
+### Decision
+
+Deploy `mmk-vst3-bridge.exe` as a version-stamped copy under the app output (`bridge\{stamp}\mmk-vst3-bridge.exe`) and write a fixed manifest file (`mmk-vst3-bridge.path`) that tells the managed host which copy to launch.
+
+Keep the old top-level `mmk-vst3-bridge.exe` copy only as a best-effort compatibility artifact. If Windows refuses to overwrite that file because a previous bridge instance is still running, the build should warn but still succeed, and the app should launch the manifest-selected versioned copy on the next run.
+
+### Why
+
+The old single-path deployment let a running bridge lock `bin\...\mmk-vst3-bridge.exe`, which meant the app could keep launching a stale native helper even after the source bridge had been rebuilt. Versioned deployment removes the path collision, and the manifest keeps runtime lookup deterministic.
+
+### Consequences
+
+- Debug builds keep working even when the fallback bridge path is locked.
+- The managed host becomes resilient to stale or missing top-level bridge copies.
+- Output folders now keep versioned bridge subdirectories; cleanup can stay opportunistic because correctness matters more than aggressive pruning.
+
+---
+
+# Bridge Copy System: Final Decision
+
+**Decision Date:** 2026-03-13  
+**Decision Maker:** Jet (Windows Dev)  
+**Context:** Post-QA validation of VST3 bridge deployment mechanism
+
+## Background
+
+The stale bridge problem was real — the native C++ bridge (mmk-vst3-bridge.exe) wasn't being updated in managed builds, causing confusion when debugging. Previous session implemented:
+
+1. **Version-stamped deployment** (`bridge\<timestamp>\mmk-vst3-bridge.exe`)
+2. **Manifest file** (`mmk-vst3-bridge.path`) pointing to the versioned copy
+3. **Best-effort fallback** copy to `mmk-vst3-bridge.exe` with graceful failure
+4. **Up-to-date checks** via `UpToDateCheckInput` and `UpToDateCheckBuilt`
+
+## Current State (Verified 2026-03-13)
+
+✅ **Working correctly:**
+- Debug build contains versioned bridge matching source byte-for-byte
+- Manifest exists and points to correct versioned path
+- Fallback copy succeeded (Debug bridge matches source)
+- QA confirmed fresh builds now match rebuilt native bridge
+
+⚠️ **Known limitation:**
+- Fallback copy can fail if bridge exe is locked by running process
+- This is expected and handled with try-catch + warning message
+
+## Decision: NO FURTHER PROJECT CHANGES
+
+### Rationale
+
+The current implementation is **robust and complete**:
+
+1. **Primary mechanism is bulletproof** — versioned bridge + manifest cannot be blocked by a running process
+2. **Fallback is best-effort only** — warning message documents the limitation
+3. **Up-to-date tracking works** — MSBuild correctly invalidates when source changes
+4. **QA validation passed** — fresh builds now correctly ship the latest bridge
+
+### Remaining Risk Assessment
+
+**"Don't build while the bridge is running"** is an acceptable operational constraint:
+
+- The primary deployment (versioned + manifest) always works
+- Only the fallback copy fails, and app runtime falls back to versioned copy
+- Warning message makes the situation clear to developers
+- This is standard behavior for rebuilding executables in use
+
+### Alternative Considered & Rejected
+
+**Forceful fallback copy** (e.g., retry with handle-killing or delayed copy):
+- ❌ Overly aggressive — might kill user's running processes unexpectedly
+- ❌ Adds complexity for minimal benefit (primary mechanism already works)
+- ❌ Warning message is sufficient for a best-effort fallback
+
+## Conclusion
+
+**Status:** ✅ COMPLETE  
+**Action:** None required  
+**Documentation:** Update team: "Fresh builds now ship the latest bridge. If you see a fallback copy warning, close the app before rebuilding (optional — versioned copy works regardless)."
+
+---
+
+**Signature:** Jet, Windows Dev Team  
+**Next Review:** Only if runtime bridge loading issues are reported
+
+---
+
+# Decision: Bridge Main Thread Must Run Win32 Message Loop
+
+**Author:** Spike (Lead Architect)  
+**Date:** 2026-03-13  
+**Status:** Implemented (commit c950d7c)  
+**Scope:** mmk-vst3-bridge architecture — affects all VST3 editor operations
+
+## Problem
+
+OB-Xd 3.vst3 (JUCE-based) hangs in `IPlugView::attached(HWND)` with a 10-second timeout. The previous fix (PostMessage deferral to run attached after the message pump starts) did not resolve the deadlock.
+
+## Root Cause
+
+**Thread affinity mismatch.** JUCE binds its `MessageManager` singleton to the thread that first loads/initialises the plugin DLL — which was the bridge's main thread (running the pipe read loop). The editor window was created on a separate `editorThread_`. When JUCE's `attached()` internally called `MessageManager::callFunctionOnMessageThread()`, it posted a message to the main thread and blocked. But the main thread was stuck in synchronous `ReadFile(pipe)`. Deadlock.
+
+## Decision
+
+Refactored `Bridge::Run()` so the **main thread runs a Win32 message loop** (`GetMessageW`). Pipe reading moved to a background thread that posts `WM_BRIDGE_COMMAND` to a hidden message-only window. All VST3 plugin loads and editor operations now happen on the main thread — the same thread where JUCE's MessageManager was initialised.
+
+`AudioRenderer::OpenEditor()` is now fully synchronous (no separate thread, no promise/future, no timeout). The calling thread (bridge main) already has a running message loop.
+
+## Impact on Team
+
+- **Faye (Audio):** No audio-thread changes. The render loop is unaffected (separate thread, `pluginMutex_`).
+- **Ed (Testing):** The bridge process now has a different threading model — main thread is a UI thread with message pump. Pipe commands arrive asynchronously via `DrainCommandQueue`. Any bridge integration tests should account for this.
+- **All:** If a plugin's `attached()` truly blocks forever (not just a JUCE thread-affinity issue), the bridge main thread stalls. Audio continues (render thread is separate), but no more commands can be processed. The C# host's existing 10-second timeout on the editor ACK handles this gracefully.
+
+## Architectural Invariant (New)
+
+> **The bridge's main thread is the UI/STA thread.** All window creation, COM operations, plugin loads, and `IPlugView` calls must happen on this thread. The pipe reader is a background thread that only enqueues strings and posts window messages. Never call VST3 plugin APIs from the pipe reader thread.

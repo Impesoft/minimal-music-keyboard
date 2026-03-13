@@ -27,6 +27,37 @@
 
 <!-- append new learnings below -->
 
+### Session: Bridge Deployment Reliability — Versioned Native Helper Copies (2026-03-13)
+
+**Context:** Ward reported that rebuilding `src\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe` could still leave the app launching a stale `bin\...\mmk-vst3-bridge.exe` because Windows kept the old output copy locked while a prior bridge process was still running.
+
+**What changed:**
+- `src\MinimalMusicKeyboard\MinimalMusicKeyboard.csproj` now deploys the native bridge into `bin\...\bridge\{LastWriteUtcTicks}\mmk-vst3-bridge.exe` and writes a sibling manifest file `bin\...\mmk-vst3-bridge.path`.
+- The same target still attempts a best-effort legacy copy to `bin\...\mmk-vst3-bridge.exe`, but treats lock failures as warnings so normal builds continue.
+- `src\MinimalMusicKeyboard\Services\Vst3BridgeBackend.cs` now resolves the bridge launch path from the manifest first, then from versioned bridge copies, and only then falls back to the legacy top-level executable.
+
+**Validation result:**
+- `dotnet build .\src\MinimalMusicKeyboard\MinimalMusicKeyboard.csproj -c Debug -p:Platform=x64 -p:RuntimeIdentifier=win-x64` succeeded even while `bin\...\mmk-vst3-bridge.exe` was locked by a running bridge process.
+- The manifest-selected executable under `bin\x64\Debug\net10.0-windows10.0.22621.0\win-x64\bridge\202603130913508458931\mmk-vst3-bridge.exe` matched the source bridge SHA-256 exactly, confirming the app output contained the fresh native bridge.
+
+**Key learnings:**
+1. **Windows child-process locks require path versioning, not just retrying copy:** If an `.exe` is currently running, copying over the same path is unreliable. Deploying a fresh build to a new versioned path avoids the lock entirely.
+2. **A tiny manifest decouples runtime selection from best-effort compatibility copies:** The app can keep a legacy `mmk-vst3-bridge.exe` beside the host for convenience, while the runtime always prefers the manifest-selected versioned bridge.
+3. **App-side fallback scanning should remain defensive:** If the manifest is missing or stale, scanning `bridge\**\mmk-vst3-bridge.exe` by newest write time preserves recoverability without hard-failing on one bad path.
+4. **Key file paths for this deployment flow:** source bridge = `src\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe`; runtime manifest = `src\MinimalMusicKeyboard\bin\x64\Debug\net10.0-windows10.0.22621.0\win-x64\mmk-vst3-bridge.path`; versioned deployed bridge root = `src\MinimalMusicKeyboard\bin\x64\Debug\net10.0-windows10.0.22621.0\win-x64\bridge\`.
+
+### Session: Final OB-Xd Bridge Integration — Manifest Selection Working End-to-End (2026-03-13)
+
+**Validation complete:** Fresh Debug builds ship versioned bridge matching source SHA-256. Manifest file correctly selects versioned copy. Shipped bridge successfully loads OB-Xd, calls `attached()` without deadlock (though plugin-side UI incomplete).
+
+**Key outcomes:**
+- Version-stamped deployment `bridge\{timestamp}\mmk-vst3-bridge.exe` + manifest `mmk-vst3-bridge.path` working as designed
+- Best-effort fallback copy to legacy `mmk-vst3-bridge.exe` gracefully warns if locked (expected when bridge running)
+- Fallback-locked builds still succeed — versioned bridge unaffected
+- `Vst3BridgeBackend` correctly resolves manifest → versioned → legacy fallback
+
+**Team handoff:** Coordinator validated message-pump architecture. Deployment now bulletproof for shipping fresh bridge.
+
 ### Session: VST3 C# Bug Fixes — Process Arguments + Ring-buffer Read Tracking (2026-03-12)
 
 **Context:** VST3 pipeline audit found two C# bugs in `Vst3BridgeBackend.cs` preventing VST3 instruments from producing sound. C++ fixes handled by Faye in parallel.

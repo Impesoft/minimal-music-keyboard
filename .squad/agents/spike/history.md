@@ -59,3 +59,20 @@
 - **REQUIRED #4 fixed:** Added BridgeState machine (Running/Faulted/Disposed) with behavior table and crash→faulted flow to §7.1. Added BridgeFaulted event.
 - **REQUIRED #5 fixed:** Added full SoundFontBackend code sketch to §6.1 preserving Volatile swap, SF2 cache with lock, command queue drain in Read(), FileStream using block, and Dispose sequence.
 - **REQUIRED #6 fixed:** Added IPC resource ownership to §3.2 — host creates MemoryMappedFile + NamedPipeServerStream, bridge connects as client. Host PID in naming scheme for stability.
+
+### 2026-03-13 — VST3 Editor Thread Affinity Fix (Bridge Main Thread Refactor)
+- **Root cause:** JUCE-based plugins (OB-Xd) bind their MessageManager to the loading thread. Editor was created on a separate `editorThread_`. `attached()` called `callFunctionOnMessageThread()` → posted to main thread → main thread stuck in `ReadFile(pipe)` → deadlock.
+- **Fix:** Refactored `Bridge::Run()` — main thread now runs Win32 message loop (`GetMessageW`). Pipe reading moved to background thread that posts `WM_BRIDGE_COMMAND` to hidden message-only window. All VST3 operations on main thread.
+- **Key architectural invariant:** The bridge's main thread is the UI/STA thread. All window creation, COM ops, plugin loads, and `IPlugView` calls must happen on this thread. Pipe reader only enqueues and posts.
+- `AudioRenderer::OpenEditor()` is now fully synchronous — no thread, no promise/future, no timeout. The calling thread (bridge main) already has a running message loop.
+- `EditorHostWindowProc` now handles `WM_CLOSE` to call `CloseEditor()` for clean VST3 teardown. Uses `SetPropW`/`GetPropW` instead of `GWLP_USERDATA`.
+- Added `commoniids.cpp` to CMakeLists for `IPlugFrame`/`IPlugView` IID definitions (was a pre-existing missing linker symbol).
+- `.gitignore` updated to exclude `[Bb]uild/` directories.
+- **Key files:** `bridge.h/cpp` (message loop + pipe reader architecture), `audio_renderer.h/cpp` (synchronous editor), `CMakeLists.txt` (commoniids).
+- **CMake build command:** `"C:\Program Files\Microsoft Visual Studio\18\Professional\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build Q:\source\minimal-music-keyboard\src\mmk-vst3-bridge\build --config Release`
+
+### 2026-03-13 — Final OB-Xd Bridge Integration (Session Complete)
+- **Architecture locked:** Bridge main thread is the UI/STA thread. All window creation, COM ops, plugin loads, and `IPlugView` calls happen on main thread. Pipe reader only enqueues and posts `WM_BRIDGE_COMMAND`.
+- **Message-pump refactoring proven:** `Bridge::Run()` now runs `GetMessageW` on main thread. Pipe reading moved to background thread. This resolves JUCE MessageManager thread affinity deadlock.
+- **Validation:** Shipped Debug bridge now successfully calls `IPlugView::attached()` without hang. Load/open/close all return success. OB-Xd editor incomplete UI is now confirmed as plugin-side (beyond minimal VST3 spec).
+- **Team handoff:** Coordinator validated implementation. Jet confirmed versioned deployment working. Faye confirmed host-side fixes exhausted. Ed flagged test coverage gap.

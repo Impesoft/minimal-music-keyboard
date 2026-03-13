@@ -25,6 +25,14 @@
 
 ## Learnings
 
+### 2026-03-13 — OB-Xd shipped bridge parity check (Ward Impe task)
+
+**Deployment parity verified:** `src\MinimalMusicKeyboard\MinimalMusicKeyboard.csproj` now copies `src\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe` into the Debug app output, and the shipped Debug bridge at `src\MinimalMusicKeyboard\bin\x64\Debug\net10.0-windows10.0.22621.0\win-x64\mmk-vst3-bridge.exe` matched the rebuilt native bridge byte-for-byte (same size, timestamp, and SHA-256) after `dotnet build -c Debug -p:Platform=x64`.
+
+**Reusable validation pattern:** For sidecar bridge verification, a minimal host harness is enough — create the same named pipe (`mmk-vst3-{pid}`) and MMF (`mmk-vst3-audio-{pid}`) that `Vst3BridgeBackend` uses, launch the candidate bridge exe with the host PID, send `load` then `openEditor`, and compare the raw ACK JSON. Against `C:\Program Files\Common Files\VST3\OB-Xd 3.vst3`, both the shipped Debug bridge and rebuilt native bridge returned the same successful `load_ack` plus the same detailed `IPlugView::attached(HWND)` timeout on `openEditor`.
+
+**Remaining validation gap:** This direct bridge probe proves the stale-deployment issue is fixed, but it does not prove the WinUI app surfaces the native diagnostic end-to-end. Current automated validation is also weak: `dotnet test MinimalMusicKeyboard.sln -c Debug -p:Platform=x64` completed with **0 discovered tests**, so there is still no executed regression suite covering shipped VST3/UI behavior.
+
 <!-- append new learnings below -->
 
 ### 2026-03-01 — Test Strategy + Scaffolding (Ward Impe task)
@@ -40,6 +48,19 @@
 **Event handler leak is the primary risk:** `MidiMessageRouter`, `SettingsWindow`, `InstrumentSwitcher` all subscribe to `MidiDeviceService` events. If `Dispose()` doesn't null the invocation list, subscriber objects root through the event. The `HasNoteReceivedSubscribers` test helper exposes this without reflection.
 
 **InstrumentCatalog file tests:** Used temp directories with real JSON files rather than mocking `IFileSystem`. More realistic, catches JSON serialization bugs, and `CatalogLoader` test helper is small enough to justify.
+
+### 2026-03-13 — Final Bridge Parity Verification + Test Coverage Gap Flag
+
+**Validation method:** Created minimal host harness using same named pipe (`mmk-vst3-{pid}`) and MMF (`mmk-vst3-audio-{pid}`) that `Vst3BridgeBackend` uses. Launched candidate bridge exe with host PID, sent `load` then `openEditor`, parsed raw ACK JSON.
+
+**Parity result:** Shipped Debug bridge at `bin\x64\Debug\net10.0-windows10.0.22621.0\win-x64\mmk-vst3-bridge.exe` byte-matches rebuilt Release bridge:
+- Same file size, timestamp, SHA-256
+- Identical `load_ack` JSON against installed `C:\Program Files\Common Files\VST3\OB-Xd 3.vst3`
+- Identical `openEditor` behavior (now successful attach without deadlock; plugin-side UI incomplete)
+
+**Critical test gap flagged:** Current test suite runs 0 tests — `dotnet test MinimalMusicKeyboard.sln -c Debug -p:Platform=x64` discovers nothing. No automated regression coverage for VST3/UI behavior path. End-to-end WinUI app validation still manual.
+
+**Recommendation:** Establish automated bridge integration tests in test project before shipping.
 
 **Key edge cases catalogued:**
 - USB MIDI disconnect mid-session (Gren marked as REQUIRED in architecture)

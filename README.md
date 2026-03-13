@@ -123,16 +123,6 @@ Expected output:
 src\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe
 ```
 
-#### 1.5 Build the managed app after the bridge exists
-
-Once the bridge exists, build the app:
-
-```powershell
-dotnet build MinimalMusicKeyboard.sln -c Release
-```
-
-The managed project will then auto-deploy the bridge into the app output directory, including a versioned bridge copy and a `mmk-vst3-bridge.path` manifest file used at runtime.
-
 ### 2. Build the app
 
 From the repository root:
@@ -141,7 +131,9 @@ From the repository root:
 dotnet build MinimalMusicKeyboard.sln -c Release
 ```
 
-The app project copies the built `mmk-vst3-bridge.exe` into the output directory automatically when the native bridge exists. If it does not exist, the app still builds, but VST3 instruments will not load.
+If the bridge already exists at `src\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe`, the managed project auto-deploys it into the app output directory, including a versioned bridge copy and a `mmk-vst3-bridge.path` manifest file used at runtime.
+
+If the bridge does not exist yet, the app still builds, but VST3 instruments will not load.
 
 ### 3. Run tests
 

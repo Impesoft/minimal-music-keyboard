@@ -2,12 +2,83 @@
 
 #include <iostream>
 #include <stdexcept>
+#include <sstream>
 
+#include <Ole2.h>
 #include <nlohmann/json.hpp>
+
+namespace
+{
+    std::string FormatStructuredExceptionCode(unsigned int code)
+    {
+        std::ostringstream stream;
+        stream << "0x" << std::hex << std::uppercase << code;
+        if (code == EXCEPTION_ACCESS_VIOLATION)
+            stream << " (access violation)";
+        return stream.str();
+    }
+
+    unsigned int TryLoadRendererWithStructuredExceptionGuard(
+        AudioRenderer* renderer,
+        const std::string* path,
+        const std::string* preset,
+        std::string* error,
+        bool* ok)
+    {
+#if defined(_MSC_VER)
+        __try
+        {
+            *ok = renderer->Load(*path, *preset, *error);
+            return 0;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            *ok = false;
+            return GetExceptionCode();
+        }
+#else
+        *ok = renderer->Load(*path, *preset, *error);
+        return 0;
+#endif
+    }
+
+    void TryUnloadRendererNoThrow(AudioRenderer& renderer)
+    {
+        try
+        {
+            renderer.Unload();
+        }
+        catch (const std::exception& ex)
+        {
+            std::cerr << "[Bridge] Renderer cleanup after load failure also failed: " << ex.what() << "\n";
+        }
+        catch (...)
+        {
+            std::cerr << "[Bridge] Renderer cleanup after load failure also failed with an unknown exception.\n";
+        }
+    }
+}
 
 Bridge::Bridge(std::uint32_t hostPid)
     : hostPid_(hostPid)
 {
+}
+
+LRESULT CALLBACK Bridge::MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_BRIDGE_COMMAND || msg == WM_BRIDGE_PIPE_CLOSED)
+    {
+        auto* bridge = reinterpret_cast<Bridge*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (bridge)
+        {
+            bridge->DrainCommandQueue();
+            if (bridge->shutdownRequested_.load())
+                PostQuitMessage(0);
+        }
+        return 0;
+    }
+
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 void Bridge::Run()
@@ -20,6 +91,64 @@ void Bridge::Run()
 
     renderer_.Start(&mmfWriter_);
 
+    // Initialize OLE/STA on the main thread — required for VST3 editor windows.
+    // Many JUCE-based plugins bind their MessageManager to the thread that first
+    // initialises COM/OLE, so this MUST happen on the thread that will later
+    // host the editor window (i.e. the main thread running the message loop).
+    const HRESULT oleResult = OleInitialize(nullptr);
+    const bool shouldOleUninitialize = oleResult == S_OK || oleResult == S_FALSE;
+
+    // Hidden message-only window for inter-thread command dispatch.
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = MessageWindowProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"MmkBridgeMsg";
+    RegisterClassExW(&wc);
+
+    messageHwnd_ = CreateWindowExW(
+        0, L"MmkBridgeMsg", nullptr, 0,
+        0, 0, 0, 0,
+        HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), nullptr);
+
+    if (messageHwnd_)
+        SetWindowLongPtrW(messageHwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+
+    // Pipe reading runs on a background thread; it posts WM_BRIDGE_COMMAND
+    // to the main thread's message loop whenever a command arrives.
+    pipeReaderThread_ = std::thread(&Bridge::PipeReaderLoop, this);
+
+    // Main thread runs the Win32 message loop.  All VST3 plugin loads and
+    // editor window operations happen here, on the same STA thread.
+    MSG msg{};
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0)
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    // Close the pipe so the reader thread unblocks from ReadFile.
+    // (When the pipe comes from host disconnecting, the reader already
+    // exited and this is a harmless double-close.)
+    ipc_.Close();
+
+    if (pipeReaderThread_.joinable())
+        pipeReaderThread_.join();
+
+    Shutdown();
+
+    if (messageHwnd_)
+    {
+        DestroyWindow(messageHwnd_);
+        messageHwnd_ = nullptr;
+    }
+
+    if (shouldOleUninitialize)
+        OleUninitialize();
+}
+
+void Bridge::PipeReaderLoop()
+{
     std::string line;
     while (!shutdownRequested_.load())
     {
@@ -29,10 +158,38 @@ void Bridge::Run()
         if (line.empty())
             continue;
 
-        HandleCommand(line);
+        {
+            std::lock_guard<std::mutex> lock(commandMutex_);
+            commandQueue_.push(std::move(line));
+            line.clear();
+        }
+
+        if (messageHwnd_)
+            PostMessageW(messageHwnd_, WM_BRIDGE_COMMAND, 0, 0);
     }
 
-    Shutdown();
+    // Pipe closed or shutdown — tell the main thread to exit.
+    shutdownRequested_ = true;
+    if (messageHwnd_)
+        PostMessageW(messageHwnd_, WM_BRIDGE_PIPE_CLOSED, 0, 0);
+}
+
+void Bridge::DrainCommandQueue()
+{
+    std::queue<std::string> local;
+    {
+        std::lock_guard<std::mutex> lock(commandMutex_);
+        local.swap(commandQueue_);
+    }
+
+    while (!local.empty())
+    {
+        HandleCommand(local.front());
+        local.pop();
+
+        if (shutdownRequested_.load())
+            break;
+    }
 }
 
 void Bridge::Shutdown()
@@ -87,7 +244,18 @@ void Bridge::HandleCommand(const std::string& line)
             const auto preset = message.value("preset", std::string());
 
             std::string error;
-            const bool ok = renderer_.Load(path, preset, error);
+            bool ok = false;
+            const auto structuredExceptionCode =
+                TryLoadRendererWithStructuredExceptionGuard(&renderer_, &path, &preset, &error, &ok);
+            if (structuredExceptionCode != 0)
+            {
+                error = "Native structured exception during VST3 load: " +
+                    FormatStructuredExceptionCode(structuredExceptionCode) + " " +
+                    renderer_.GetLoadStageDescription() + ".";
+                std::cerr << "[Bridge] " << error << "\n";
+                writeLoadAck(false, error, false, error);
+                return;
+            }
             bool supportsEditor = false;
             std::string editorDiagnostics;
             if (ok)
@@ -173,7 +341,7 @@ void Bridge::HandleCommand(const std::string& line)
         {
             const std::string error = std::string("Unhandled bridge exception during load: ") + ex.what();
             std::cerr << "[Bridge] " << error << "\n";
-            renderer_.Unload();
+            TryUnloadRendererNoThrow(renderer_);
             writeLoadAck(false, error, false, error);
             return;
         }
@@ -186,7 +354,7 @@ void Bridge::HandleCommand(const std::string& line)
         {
             const std::string error = "Unhandled unknown bridge exception during load.";
             std::cerr << "[Bridge] " << error << "\n";
-            renderer_.Unload();
+            TryUnloadRendererNoThrow(renderer_);
             writeLoadAck(false, error, false, error);
             return;
         }

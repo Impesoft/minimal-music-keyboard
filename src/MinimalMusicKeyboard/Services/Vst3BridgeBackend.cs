@@ -1,7 +1,9 @@
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.IO.Pipes;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -36,6 +38,9 @@ namespace MinimalMusicKeyboard.Services;
 /// </summary>
 public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISampleProvider
 {
+    private const string BridgeExecutableName = "mmk-vst3-bridge.exe";
+    private const string BridgeManifestName = "mmk-vst3-bridge.path";
+
     // ── Bridge state machine ──────────────────────────────────────────────────
 
     private enum BridgeState { NotStarted, Starting, Running, Faulted, Disposed }
@@ -184,9 +189,9 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
     /// then sends the <c>load</c> command and waits for the ack.
     /// </summary>
     /// <remarks>
-    /// If <c>mmk-vst3-bridge.exe</c> is not found at
-    /// <c>{AppContext.BaseDirectory}\mmk-vst3-bridge.exe</c>, this method logs a warning and
-    /// returns without throwing; <see cref="IsReady"/> remains <see langword="false"/>.<br/>
+    /// If the deployed bridge executable cannot be resolved from the app output directory,
+    /// this method logs a warning and returns without throwing; <see cref="IsReady"/> remains
+    /// <see langword="false"/>.<br/>
     /// Any other failure transitions the backend to <c>Faulted</c> and raises
     /// <see cref="BridgeFaulted"/>.
     /// </remarks>
@@ -212,10 +217,10 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
         }
 
         // Check for bridge exe — raise BridgeFaulted when absent so callers can surface the error
-        var bridgeExePath = Path.Combine(AppContext.BaseDirectory, "mmk-vst3-bridge.exe");
-        if (!File.Exists(bridgeExePath))
+        var bridgeExePath = ResolveBridgeExecutablePath();
+        if (bridgeExePath is null)
         {
-            var reason = $"Bridge executable not found at '{bridgeExePath}'. Deploy mmk-vst3-bridge.exe to enable VST3 support.";
+            var reason = $"Bridge executable not found under '{AppContext.BaseDirectory}'. Deploy {BridgeExecutableName} to enable VST3 support.";
             _editorAvailabilityDescription = reason;
             Debug.WriteLine($"[Vst3BridgeBackend] {reason}");
             BridgeFaulted?.Invoke(this, new BridgeFaultedEventArgs(reason));
@@ -349,6 +354,54 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
             Debug.WriteLine($"[Vst3BridgeBackend] LoadAsync failed: {ex.Message}");
             TransitionToFaulted($"Failed to start or connect to bridge: {ex.Message}", ex);
         }
+    }
+
+    private static string? ResolveBridgeExecutablePath()
+    {
+        var baseDirectory = AppContext.BaseDirectory;
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var candidate in EnumerateBridgeCandidates(baseDirectory))
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+                continue;
+
+            var fullPath = Path.GetFullPath(candidate);
+            if (!seenPaths.Add(fullPath))
+                continue;
+
+            if (File.Exists(fullPath))
+                return fullPath;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> EnumerateBridgeCandidates(string baseDirectory)
+    {
+        var manifestPath = Path.Combine(baseDirectory, BridgeManifestName);
+        if (File.Exists(manifestPath))
+        {
+            var manifestEntry = File.ReadAllText(manifestPath).Trim();
+            if (!string.IsNullOrWhiteSpace(manifestEntry))
+            {
+                yield return Path.IsPathRooted(manifestEntry)
+                    ? manifestEntry
+                    : Path.Combine(baseDirectory, manifestEntry);
+            }
+        }
+
+        var versionedBridgeRoot = Path.Combine(baseDirectory, "bridge");
+        if (Directory.Exists(versionedBridgeRoot))
+        {
+            foreach (var candidate in Directory.EnumerateFiles(versionedBridgeRoot, BridgeExecutableName, SearchOption.AllDirectories)
+                .OrderByDescending(File.GetLastWriteTimeUtc))
+            {
+                yield return candidate;
+            }
+        }
+
+        yield return Path.Combine(baseDirectory, BridgeExecutableName);
     }
 
     // ── MIDI commands — AUDIO RENDER THREAD ───────────────────────────────────

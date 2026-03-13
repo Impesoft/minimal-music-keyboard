@@ -22,26 +22,30 @@
     <!-- Tell the WinUI3 XAML tooling not to generate its own Program/Main class
          since we provide our own in Program.cs for single-instance enforcement. -->
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <BridgeSource>$(MSBuildThisFileDirectory)..\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe</BridgeSource>
   </PropertyGroup>
 
   <ItemGroup>
     <Content Include="Assets\AppIcon.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <UpToDateCheckInput Include="$(BridgeSource)" Condition="Exists('$(BridgeSource)')" />
+    <UpToDateCheckBuilt Include="$(OutputPath)mmk-vst3-bridge.exe" />
   </ItemGroup>
 
-  <!-- Auto-deploy the VST3 bridge binary alongside the app on every build -->
+  <!-- Auto-deploy the VST3 bridge binary alongside the app on every build.
+       Deploy a version-stamped copy plus a manifest so a running bridge cannot
+       block the fresh build output from being used on the next launch. -->
   <Target Name="CopyVst3Bridge" AfterTargets="Build">
     <PropertyGroup>
-      <BridgeSource>$(MSBuildThisFileDirectory)..\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe</BridgeSource>
-      <BridgeFallback>$(OutputPath)mmk-vst3-bridge.exe</BridgeFallback>
+      <BridgeFallback>$(TargetDir)mmk-vst3-bridge.exe</BridgeFallback>
+      <BridgeDeploymentManifest>$(TargetDir)mmk-vst3-bridge.path</BridgeDeploymentManifest>
     </PropertyGroup>
-    <Copy SourceFiles="$(BridgeSource)" DestinationFolder="$(OutputPath)"
-          SkipUnchangedFiles="true" Condition="Exists('$(BridgeSource)')" />
-    <Message Text="VST3 bridge deployed to $(OutputPath)" Importance="normal"
-             Condition="Exists('$(BridgeSource)')" />
+
+    <Exec Condition="Exists('$(BridgeSource)')"
+          Command="powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;$src = [IO.Path]::GetFullPath('$(BridgeSource)'); $manifest = [IO.Path]::GetFullPath('$(BridgeDeploymentManifest)'); $outputDir = Split-Path -Parent $manifest; $stamp = (Get-Item -LiteralPath $src).LastWriteTimeUtc.ToString('yyyyMMddHHmmssfffffff'); $versionDir = Join-Path $outputDir ('bridge\' + $stamp); $versionExe = Join-Path $versionDir 'mmk-vst3-bridge.exe'; New-Item -ItemType Directory -Force -Path $versionDir | Out-Null; Copy-Item -LiteralPath $src -Destination $versionExe -Force; Set-Content -LiteralPath $manifest -Value ('bridge\' + $stamp + '\mmk-vst3-bridge.exe') -NoNewline; try { Copy-Item -LiteralPath $src -Destination '$(BridgeFallback)' -Force -ErrorAction Stop } catch { Write-Host ('warning: best-effort fallback bridge copy skipped: ' + $_.Exception.Message) }; Write-Host ('VST3 bridge deployed to ' + $versionExe)&quot;" />
     <Message Text="WARNING: mmk-vst3-bridge.exe source not found at $(BridgeSource) — bridge was not auto-deployed."
-             Importance="high" Condition="!Exists('$(BridgeSource)') AND !Exists('$(BridgeFallback)')" />
+             Importance="high" Condition="!Exists('$(BridgeSource)') AND !Exists('$(BridgeFallback)') AND !Exists('$(BridgeDeploymentManifest)')" />
   </Target>
 
   <ItemGroup>

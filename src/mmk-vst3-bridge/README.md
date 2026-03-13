@@ -25,7 +25,7 @@ src\mmk-vst3-bridge\build\Release\mmk-vst3-bridge.exe
 
 After the managed app is built, `src\MinimalMusicKeyboard\MinimalMusicKeyboard.csproj` copies that executable into the app output folder.
 
-## Build (CMake + vcpkg)
+## Build
 
 ### 1. Clone the Steinberg VST3 SDK
 
@@ -37,17 +37,15 @@ git clone https://github.com/steinbergmedia/vst3sdk.git extern\vst3sdk --recurse
 
 If you keep the SDK elsewhere, pass its location explicitly through `-DVST3_SDK_ROOT=<path>`.
 
-### 2. Install native dependencies
+### 2. Install native build tools
 
-```powershell
-vcpkg install
-```
-
-Also make sure you have:
+Make sure you have:
 
 - Visual Studio C++ build tools
 - CMake
 - a compatible MSVC toolchain
+
+You do **not** need `vcpkg` for the default build documented here. This project already falls back to the bundled `include\nlohmann\json.hpp` header if `nlohmann_json` is not provided externally.
 
 ### 3. Configure the bridge
 
@@ -55,14 +53,14 @@ Also make sure you have:
 # From repo root
 cd src\mmk-vst3-bridge
 
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<path>\vcpkg\scripts\buildsystems\vcpkg.cmake -DVST3_SDK_ROOT=..\..\extern\vst3sdk
+cmake -S . -B build -DVST3_SDK_ROOT=..\..\extern\vst3sdk
 ```
 
 Notes:
 
-- Replace `<path>` with your actual `vcpkg` root
-- If the SDK is in `extern\vst3sdk` relative to the repository root, use `-DVST3_SDK_ROOT=..\..\extern\vst3sdk`
+- If the SDK is in `extern\vst3sdk` relative to the repository root, `-DVST3_SDK_ROOT=..\..\extern\vst3sdk` is the expected value
 - If the SDK lives elsewhere, replace `-DVST3_SDK_ROOT=...` with the correct path
+- If you decide to use `vcpkg` anyway, treat that as optional custom setup and configure into a fresh build directory
 
 ### 4. Build the bridge
 

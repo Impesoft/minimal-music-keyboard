@@ -53,7 +53,6 @@ The app stores settings under `%LOCALAPPDATA%\MinimalMusicKeyboard`.
 - Visual Studio 2022 or newer
 - For VST3 support:
   - Steinberg VST3 SDK
-  - vcpkg
   - Visual Studio C++ build tools / CMake
 
 ### Fresh clone note
@@ -88,21 +87,16 @@ git clone https://github.com/steinbergmedia/vst3sdk.git extern\vst3sdk --recurse
 
 If you prefer a different location, that is fine, but you must pass the correct path to CMake through `-DVST3_SDK_ROOT=...`.
 
-#### 1.2 Install native dependencies
-
-The bridge also uses packages resolved through `vcpkg`.
+#### 1.2 Install native build tools
 
 At minimum, make sure:
 
-- `vcpkg` is installed
 - the Visual Studio C++ toolchain is installed
 - CMake is available
 
-If needed:
+You do **not** need `vcpkg` for the default documented build path. The bridge repo already includes a bundled fallback for `nlohmann/json`.
 
-```powershell
-vcpkg install
-```
+If you specifically want to use a `vcpkg`-provided `nlohmann_json` package instead of the bundled header, that is optional advanced setup.
 
 #### 1.3 Configure the bridge
 
@@ -110,10 +104,12 @@ From the repository root:
 
 ```powershell
 cd src\mmk-vst3-bridge
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<path>\vcpkg\scripts\buildsystems\vcpkg.cmake -DVST3_SDK_ROOT=..\..\extern\vst3sdk
+cmake -S . -B build -DVST3_SDK_ROOT=..\..\extern\vst3sdk
 ```
 
 If your SDK is elsewhere, replace `..\..\extern\vst3sdk` with the actual path.
+
+If you choose to use `vcpkg` anyway, configure CMake in a fresh build directory and pass your toolchain file there. That is optional, not required.
 
 #### 1.4 Build the bridge
 

@@ -5,7 +5,13 @@ Native out-of-process VST3 host bridge for Minimal Music Keyboard. The managed a
 > [!WARNING]
 > If someone clones the repository and only builds the managed WinUI project, **VST3 will not work yet**.
 >
-> This native bridge must be built separately, and the Steinberg VST3 SDK must be installed separately as well. Neither the SDK nor the compiled `mmk-vst3-bridge.exe` is stored in git.
+> New here? Do these steps in this order:
+>
+> 1. Clone the Steinberg VST3 SDK into `extern\vst3sdk`
+> 2. Configure and build this bridge project
+> 3. Build `MinimalMusicKeyboard.sln`
+>
+> If you skip step 2, the app may still build, but VST3 support in the app will not work.
 
 ## What this executable is for
 

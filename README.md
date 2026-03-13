@@ -7,7 +7,16 @@ It supports both **SF2 soundfonts** and **VST3 instruments**, lets you map **8 i
 > [!WARNING]
 > A **fresh clone of this repository will not have working VST3 support yet**.
 >
-> VST3 support depends on a separate native executable, `mmk-vst3-bridge.exe`, which is built from `src\mmk-vst3-bridge` and is **not** committed to git. The Steinberg VST3 SDK is also **not** included in this repository. After cloning, SF2 support can work once you build the managed app, but VST3 support will not work until you install the SDK and build the bridge.
+> If you are new to this repo, here is the simple version:
+>
+> 1. **SF2 works first.** If you only want soundfonts, build the app normally.
+> 2. **VST3 needs one extra setup step.** Before VST3 plugins can work, you must:
+>    - clone the Steinberg VST3 SDK into `extern\vst3sdk`
+>    - build `src\mmk-vst3-bridge`
+>    - build the main app again
+> 3. If you skip those steps, the app can still build, but **VST3 plugins will not load**.
+>
+> Full step-by-step commands are in the **Building from source** section below.
 
 ## Features
 

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -45,5 +46,7 @@ private:
     HWND messageHwnd_{ nullptr };
     std::thread pipeReaderThread_;
     std::mutex commandMutex_;
+    std::condition_variable commandProcessedCv_;
     std::queue<std::string> commandQueue_;
+    bool commandPending_{ false };
 };

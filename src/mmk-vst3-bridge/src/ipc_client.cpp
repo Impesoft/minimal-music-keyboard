@@ -92,9 +92,6 @@ bool IpcClient::WriteLine(const std::string& line)
         offset += bytesWritten;
     }
 
-    if (!FlushFileBuffers(pipeHandle_))
-        return false;
-
     return true;
 }
 

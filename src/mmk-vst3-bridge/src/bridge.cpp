@@ -161,11 +161,17 @@ void Bridge::PipeReaderLoop()
         {
             std::lock_guard<std::mutex> lock(commandMutex_);
             commandQueue_.push(std::move(line));
+            commandPending_ = true;
             line.clear();
         }
 
         if (messageHwnd_)
             PostMessageW(messageHwnd_, WM_BRIDGE_COMMAND, 0, 0);
+
+        {
+            std::unique_lock<std::mutex> lock(commandMutex_);
+            commandProcessedCv_.wait(lock, [this]() { return !commandPending_ || shutdownRequested_.load(); });
+        }
     }
 
     // Pipe closed or shutdown — tell the main thread to exit.
@@ -186,6 +192,12 @@ void Bridge::DrainCommandQueue()
     {
         HandleCommand(local.front());
         local.pop();
+
+        {
+            std::lock_guard<std::mutex> lock(commandMutex_);
+            commandPending_ = false;
+        }
+        commandProcessedCv_.notify_all();
 
         if (shutdownRequested_.load())
             break;

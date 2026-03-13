@@ -21,6 +21,13 @@ During plugin load, record whether editor support was found and why:
 
 Return that data in the bridge load ACK so the managed host can disable the editor button and show the exact reason before the user retries.
 
+If `supportsEditor` is `false`, never leave the load ACK diagnostic blank. If discovery never produced a reason, fall back to the native load error (or another explicit native-side explanation) before serializing the ACK.
+
+### Verify the deployed bridge binary, not just the build output
+When the managed app talks to a native helper executable, confirm the binary copied beside the app is the one you just built. A stale deployed bridge can silently mask protocol changes like new `load_ack` fields even when the source and producer build output are correct.
+
+Pay special attention to MSBuild copy targets and relative paths from the app project directory; one wrong `..\` can leave an old bridge exe in `bin\...` and make the UI appear to ignore native changes.
+
 ### Respect shared component/controller lifetime
 Some plugins implement `IComponent` and `IEditController` on the same object. When that happens:
 - do **not** call `initialize()` twice

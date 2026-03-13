@@ -65,11 +65,23 @@ void Bridge::HandleCommand(const std::string& line)
 
         std::string error;
         const bool ok = renderer_.Load(path, preset, error);
+        const bool supportsEditor = renderer_.SupportsEditor();
+        std::string editorDiagnostics = renderer_.GetEditorDiagnostics();
+        if (!supportsEditor)
+        {
+            if (editorDiagnostics.empty() || editorDiagnostics == "Editor support not evaluated yet.")
+            {
+                editorDiagnostics = error.empty()
+                    ? "Plugin editor availability could not be determined during load."
+                    : error;
+            }
+        }
+
         nlohmann::json ack;
         ack["ack"] = "load_ack";
         ack["ok"] = ok;
-        ack["supportsEditor"] = renderer_.SupportsEditor();
-        ack["editorDiagnostics"] = renderer_.GetEditorDiagnostics();
+        ack["supportsEditor"] = supportsEditor;
+        ack["editorDiagnostics"] = editorDiagnostics;
         if (!ok)
             ack["error"] = error.empty() ? "Failed to load VST3 plugin." : error;
 

@@ -27,6 +27,26 @@
 
 <!-- append new learnings below -->
 
+### Load-Time VST3 Editor Diagnostics Deployment Fix (2026-03-13)
+
+**Files modified:**
+- `src/mmk-vst3-bridge/src/bridge.cpp` — load ACK now preserves a non-empty `editorDiagnostics` string whenever `supportsEditor` is false, falling back to the native load error if discovery diagnostics were never populated.
+- `src/MinimalMusicKeyboard/MinimalMusicKeyboard.csproj` — fixed the app build copy path so the freshly built native bridge from `src\mmk-vst3-bridge\build\Release` is actually deployed beside the managed app.
+
+**What was really going wrong:**
+- The native bridge source already emitted detailed editor discovery diagnostics, but the WinUI app was still launching an older deployed `mmk-vst3-bridge.exe` that predated the `supportsEditor` / `editorDiagnostics` fields.
+- The stale binary stayed in `bin\...\win-x64\mmk-vst3-bridge.exe` because the MSBuild copy target pointed at a non-existent repo-root `mmk-vst3-bridge\build\Release` folder instead of `src\mmk-vst3-bridge\build\Release`.
+- That meant the managed parser saw `supportsEditor=false` with no `editorDiagnostics` field and fell back to the generic "Plugin editor is not available." text.
+
+**Reusable pattern:**
+- When a native/managed IPC contract looks correct in source but runtime behavior still matches an older protocol, verify the deployed binary beside the app, not just the producer project output.
+- For VST3 load ACKs, always send a non-empty editor-availability diagnostic when `supportsEditor` is false so the managed layer never has to invent a generic fallback.
+
+**Build result:**
+- ✅ Native bridge rebuilt successfully in `src\mmk-vst3-bridge\build\Release`
+- ✅ Managed app rebuilt successfully in Debug x64 and now deploys the same bridge binary hash beside the app
+- ✅ `dotnet test` still completes with the existing "0 tests discovered" warning only
+
 ### OB-Xd VST3 Host Compatibility Fix (2026-03-12)
 
 **Files modified:**

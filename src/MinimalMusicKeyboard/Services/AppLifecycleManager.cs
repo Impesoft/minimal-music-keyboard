@@ -22,6 +22,9 @@ namespace MinimalMusicKeyboard.Services;
 /// </summary>
 public sealed class AppLifecycleManager : IDisposable
 {
+    private const int SettingsWindowWidth = 820;
+    private const int SettingsWindowHeight = 994;
+
     private readonly InstrumentCatalog _catalog;
     private readonly MidiDeviceService _midi;
     private readonly TrayIconService _tray;
@@ -110,13 +113,20 @@ public sealed class AppLifecycleManager : IDisposable
             try
             {
                 var appWindow = _settingsWindow.AppWindow;
-                const int W = 640, H = 520;
+                if (appWindow.Presenter is OverlappedPresenter presenter)
+                {
+                    presenter.PreferredMinimumWidth = SettingsWindowWidth;
+                    presenter.PreferredMinimumHeight = SettingsWindowHeight;
+                }
+
                 var display  = DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Primary);
                 var workArea = display.WorkArea;
+                int width = Math.Min(SettingsWindowWidth, workArea.Width);
+                int height = Math.Min(SettingsWindowHeight, workArea.Height);
                 appWindow.MoveAndResize(new Windows.Graphics.RectInt32(
-                    workArea.X + (workArea.Width  - W) / 2,
-                    workArea.Y + (workArea.Height - H) / 2,
-                    W, H));
+                    workArea.X + (workArea.Width  - width) / 2,
+                    workArea.Y + (workArea.Height - height) / 2,
+                    width, height));
             }
             catch (Exception ex)
             {

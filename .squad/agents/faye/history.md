@@ -27,6 +27,20 @@
 
 <!-- append new learnings below -->
 
+### Bridge Load ACK Crash/No-Response Hardening (2026-03-13)
+
+**Files modified:**
+- `src/mmk-vst3-bridge/src/bridge.cpp` — wrapped load-command handling so native exceptions become `load_ack` failures instead of dropping the pipe silently; parse/ACK write failures now also emit stderr diagnostics.
+- `src/MinimalMusicKeyboard/Services/Vst3BridgeBackend.cs` — redirected bridge stdout/stderr, buffered native diagnostics, and folded bridge exit codes + captured stderr into load-failure messages when the ACK is missing or times out.
+
+**What changed operationally:**
+- A bridge-side C++ exception during `renderer_.Load(...)`, `SupportsEditor()`, or `GetEditorDiagnostics()` now returns `ack:"load_ack", ok:false` with a real error message instead of tearing down the request path with `<no response>`.
+- If the native bridge still dies before it can ACK, the managed backend now reports deterministic context such as the bridge process exit code and the last stderr lines, so OB-Xd-style failures no longer look silent from the app.
+
+**Reusable pattern:**
+- For native helper processes behind a line-based ACK protocol, harden both ends: catch and serialize command-local failures on the native side, then capture child-process stderr/exit code on the managed side as a second diagnostic channel.
+- Treat `<no response>` as an instrumentation bug. Even when the root plugin failure is outside host control, the host should still surface either a structured ACK error or a concrete crash/exit diagnostic.
+
 ### Load-Time VST3 Editor Diagnostics Deployment Fix (2026-03-13)
 
 **Files modified:**

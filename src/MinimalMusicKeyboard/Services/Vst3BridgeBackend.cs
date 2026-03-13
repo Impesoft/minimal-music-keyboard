@@ -56,6 +56,8 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
     private StreamReader? _pipeReader;
     private MemoryMappedFile? _mmf;
     private MemoryMappedViewAccessor? _mmfView;
+    private readonly object _bridgeDiagnosticsLock = new();
+    private readonly StringBuilder _bridgeDiagnostics = new();
 
     // ── Command channel (audio thread → pipe writer task, lock-free) ──────────
 
@@ -233,6 +235,8 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
             _state = BridgeState.Starting;
         }
 
+        ResetBridgeDiagnostics();
+
         try
         {
             // ── Step 1: Create IPC resources (host is server) ─────────────────
@@ -268,9 +272,12 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
                 Arguments       = $"{hostPid}",
                 UseShellExecute = false,
                 CreateNoWindow  = true,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
             };
             _bridgeProcess = Process.Start(psi)
                 ?? throw new InvalidOperationException("Process.Start returned null for bridge process.");
+            StartBridgeDiagnosticsCapture(_bridgeProcess);
 
             // ── Step 3: Wait for bridge to connect to pipe ────────────────────
             using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
@@ -302,7 +309,7 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
 
             if (!ParseLoadAck(ackLine, out var errorMessage, out var supportsEditor, out var editorDiagnostics))
                 throw new InvalidOperationException(
-                    $"Bridge rejected load command: {errorMessage ?? ackLine ?? "<no response>"}");
+                    $"Bridge rejected load command: {DescribeLoadAckFailure(ackLine, errorMessage)}");
 
             _supportsEditor = supportsEditor;
             _editorAvailabilityDescription = string.IsNullOrWhiteSpace(editorDiagnostics)
@@ -324,7 +331,7 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
         catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
         {
             // Timed-out (not caller-cancelled) — treat as fault
-            var msg = "Timed out waiting for bridge to respond.";
+            var msg = DescribeBridgeFailure("Timed out waiting for bridge to respond.");
             Debug.WriteLine($"[Vst3BridgeBackend] {msg}");
             TransitionToFaulted(msg);
         }
@@ -596,6 +603,8 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
         {
             _state = BridgeState.NotStarted;
         }
+
+        ResetBridgeDiagnostics();
     }
 
 
@@ -760,5 +769,87 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
         }
         catch { }
         return response;
+    }
+
+    private void StartBridgeDiagnosticsCapture(Process bridgeProcess)
+    {
+        _ = Task.Run(() => PumpBridgeDiagnosticsAsync(bridgeProcess.StandardError, "bridge stderr"));
+        _ = Task.Run(() => PumpBridgeDiagnosticsAsync(bridgeProcess.StandardOutput, "bridge stdout"));
+    }
+
+    private async Task PumpBridgeDiagnosticsAsync(StreamReader reader, string source)
+    {
+        try
+        {
+            while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
+            {
+                if (!string.IsNullOrWhiteSpace(line))
+                    AppendBridgeDiagnostic($"{source}: {line.Trim()}");
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (IOException)
+        {
+        }
+    }
+
+    private void ResetBridgeDiagnostics()
+    {
+        lock (_bridgeDiagnosticsLock)
+        {
+            _bridgeDiagnostics.Clear();
+        }
+    }
+
+    private void AppendBridgeDiagnostic(string message)
+    {
+        const int maxLength = 4096;
+
+        lock (_bridgeDiagnosticsLock)
+        {
+            if (_bridgeDiagnostics.Length > 0)
+                _bridgeDiagnostics.Append(' ');
+
+            _bridgeDiagnostics.Append(message);
+            if (_bridgeDiagnostics.Length > maxLength)
+                _bridgeDiagnostics.Remove(0, _bridgeDiagnostics.Length - maxLength);
+        }
+    }
+
+    private string? GetBridgeDiagnosticsSnapshot()
+    {
+        lock (_bridgeDiagnosticsLock)
+        {
+            return _bridgeDiagnostics.Length == 0 ? null : _bridgeDiagnostics.ToString();
+        }
+    }
+
+    private string DescribeLoadAckFailure(string? ackLine, string? errorMessage)
+    {
+        if (!string.IsNullOrWhiteSpace(errorMessage))
+            return errorMessage;
+
+        if (!string.IsNullOrWhiteSpace(ackLine))
+            return ackLine;
+
+        return DescribeBridgeFailure("<no response>");
+    }
+
+    private string DescribeBridgeFailure(string fallbackMessage)
+    {
+        var diagnostics = GetBridgeDiagnosticsSnapshot();
+        if (_bridgeProcess is { HasExited: true } process)
+        {
+            var exitMessage = $"Bridge process exited with code 0x{process.ExitCode:X8}.";
+            return string.IsNullOrWhiteSpace(diagnostics)
+                ? $"{fallbackMessage} {exitMessage}"
+                : $"{fallbackMessage} {exitMessage} {diagnostics}";
+        }
+
+        return string.IsNullOrWhiteSpace(diagnostics)
+            ? fallbackMessage
+            : $"{fallbackMessage} {diagnostics}";
     }
 }

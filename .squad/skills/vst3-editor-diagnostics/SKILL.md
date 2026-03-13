@@ -28,6 +28,11 @@ When the managed app talks to a native helper executable, confirm the binary cop
 
 Pay special attention to MSBuild copy targets and relative paths from the app project directory; one wrong `..\` can leave an old bridge exe in `bin\...` and make the UI appear to ignore native changes.
 
+### Add a second diagnostic path for missing ACKs
+If the bridge can crash or abort before replying, the managed host should redirect and buffer the child process stdout/stderr and include the bridge exit code in any "missing ACK" failure.
+
+That way a failed `load` command degrades to a concrete message like "bridge exited with 0xC0000005" or the last native stderr line instead of a useless `<no response>` placeholder.
+
 ### Respect shared component/controller lifetime
 Some plugins implement `IComponent` and `IEditController` on the same object. When that happens:
 - do **not** call `initialize()` twice

@@ -1,0 +1,15 @@
+# .squad directory is version-controlled team memory
+# Explicitly allow log/, orchestration-log/, and other squad dirs
+!log/
+!orchestration-log/
+!decisions/
+!decisions.md
+!decisions-archive.md
+!agents/
+!casting/
+!ceremonies.md
+!identity/
+!plugins/
+!routing.md
+!skills/
+!team.md

@@ -23,8 +23,9 @@ private:
 
     HANDLE mappingHandle_ = nullptr;
     void* view_ = nullptr;
-    LONG* writePos_ = nullptr;
+    LONG* writeCounterAddress_ = nullptr;
     float* audioBuffer_ = nullptr;
     int frameSize_ = 0;
+    int ringCapacity_ = 0;
     LONG writeCounter_ = 0;
 };

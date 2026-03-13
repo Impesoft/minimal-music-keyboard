@@ -49,7 +49,7 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
     private readonly object _stateLock = new();
     private volatile bool _isReady;
     private volatile bool _disposed;
-    private volatile int _lastReadPos = -1;
+    private int _readBlockCounter;
     private volatile bool _supportsEditor;
     private string _editorAvailabilityDescription = "VST3 plugin has not been loaded yet.";
 
@@ -91,16 +91,21 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
     // ── Shared-memory audio ring buffer ───────────────────────────────────────
 
     // Header layout (little-endian, all int32):
-    //   Offset  0: magic     = 0x4D4D4B56 ('M','M','K','V')
-    //   Offset  4: version   = 1
-    //   Offset  8: frameSize (sample count per render block, mono)
-    //   Offset 12: writePos  (atomic int32; bridge advances this after each block)
-    // Data starts at offset 16: float32 stereo-interleaved, frameSize * 2 floats.
-    private const int MmfHeaderSize = 16;
+    //   Offset  0: magic         = 0x4D4D4B56 ('M','M','K','V')
+    //   Offset  4: version       = 2
+    //   Offset  8: frameSize     (sample count per render block, mono)
+    //   Offset 12: ringCapacity  (number of stereo blocks in the MMF ring)
+    //   Offset 16: writeCounter  (atomic int32; total published blocks)
+    // Data starts at offset 20: float32 stereo-interleaved blocks.
+    private const int MmfHeaderSize = 20;
     private const int MmfMagic = 0x4D4D4B56;
+    private const int MmfVersion = 2;
 
-    private float[] _audioWorkBuffer = Array.Empty<float>(); // pre-allocated in LoadAsync
+    private float[] _audioWorkBuffer = Array.Empty<float>(); // one bridge block, pre-allocated in LoadAsync
     private int _frameSize;
+    private int _ringCapacity;
+    private int _bufferedSampleOffset;
+    private int _bufferedSampleCount;
 
     // ── Audio constants ───────────────────────────────────────────────────────
 
@@ -158,24 +163,53 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
 
         try
         {
-            // Check if bridge has written a new frame since last read
-            int writePos = view.ReadInt32(12);   // writePos is at MMF header offset 12
-            if (writePos == _lastReadPos)
+            int destination = offset;
+            int remaining = count;
+            int blockSampleCount = _frameSize * AudioChannels;
+            if (blockSampleCount == 0 || _ringCapacity <= 0)
             {
-                // Bridge hasn't written a new frame yet — return silence
                 Array.Clear(buffer, offset, count);
                 return count;
             }
-            _lastReadPos = writePos;
 
-            int samplesToCopy = Math.Min(count, _audioWorkBuffer.Length);
-            view.ReadArray(MmfHeaderSize, _audioWorkBuffer, 0, samplesToCopy);
-            Array.Copy(_audioWorkBuffer, 0, buffer, offset, samplesToCopy);
-            if (samplesToCopy < count)
-                Array.Clear(buffer, offset + samplesToCopy, count - samplesToCopy);
+            while (remaining > 0)
+            {
+                if (_bufferedSampleCount > 0)
+                {
+                    int samplesToCopy = Math.Min(remaining, _bufferedSampleCount);
+                    Array.Copy(_audioWorkBuffer, _bufferedSampleOffset, buffer, destination, samplesToCopy);
+                    _bufferedSampleOffset += samplesToCopy;
+                    _bufferedSampleCount -= samplesToCopy;
+                    destination += samplesToCopy;
+                    remaining -= samplesToCopy;
+                    continue;
+                }
+
+                int publishedBlockCount = view.ReadInt32(16);
+                if (publishedBlockCount <= _readBlockCounter)
+                    break;
+
+                int unreadBlockCount = publishedBlockCount - _readBlockCounter;
+                if (unreadBlockCount > _ringCapacity)
+                {
+                    _readBlockCounter = publishedBlockCount - _ringCapacity;
+                }
+
+                int blockIndex = _readBlockCounter % _ringCapacity;
+                long blockOffset = MmfHeaderSize + ((long)blockIndex * blockSampleCount * sizeof(float));
+                view.ReadArray(blockOffset, _audioWorkBuffer, 0, blockSampleCount);
+                _readBlockCounter++;
+                _bufferedSampleOffset = 0;
+                _bufferedSampleCount = blockSampleCount;
+            }
+
+            if (remaining > 0)
+                Array.Clear(buffer, destination, remaining);
         }
         catch
         {
+            _bufferedSampleOffset = 0;
+            _bufferedSampleCount = 0;
             Array.Clear(buffer, offset, count);
         }
 
@@ -254,21 +288,28 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
                 pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous);
 
-            // Host creates shared-memory audio buffer
-            // Header (16 bytes) + audio data (960 frames * 2 channels * 4 bytes = 7680 bytes)
-            const int frameSize = 960;
-            long mmfSize = MmfHeaderSize + (frameSize * AudioChannels * sizeof(float));
+            // Host creates shared-memory audio buffer.
+            // Use 10 ms bridge blocks so the MMF handoff has cadence headroom
+            // instead of depending on a single 20 ms publish arriving exactly on time.
+            const int frameSize = 480;
+            const int ringCapacity = 16;
+            long mmfSize = MmfHeaderSize + ((long)frameSize * AudioChannels * sizeof(float) * ringCapacity);
             _mmf = MemoryMappedFile.CreateNew(mmfName, mmfSize, MemoryMappedFileAccess.ReadWrite);
             _mmfView = _mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.ReadWrite);
 
             // Write MMF header
-            _mmfView.Write(0, MmfMagic);      // magic
-            _mmfView.Write(4, 1);              // version
-            _mmfView.Write(8, frameSize);      // frameSize
-            _mmfView.Write(12, 0);             // writePos (initial)
+            _mmfView.Write(0, MmfMagic);           // magic
+            _mmfView.Write(4, MmfVersion);         // version
+            _mmfView.Write(8, frameSize);          // frameSize
+            _mmfView.Write(12, ringCapacity);      // ringCapacity
+            _mmfView.Write(16, 0);                 // writeCounter (initial)
 
             _frameSize = frameSize;
             _audioWorkBuffer = new float[frameSize * AudioChannels];
+            _ringCapacity = ringCapacity;
+            _readBlockCounter = 0;
+            _bufferedSampleOffset = 0;
+            _bufferedSampleCount = 0;
 
             // ── Step 2: Launch bridge process ─────────────────────────────────
             var psi = new ProcessStartInfo
@@ -320,6 +361,8 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
             _editorAvailabilityDescription = string.IsNullOrWhiteSpace(editorDiagnostics)
                 ? (supportsEditor ? "Plugin editor is available." : "Plugin editor is not available.")
                 : editorDiagnostics;
+
+            await PrimeInitialAudioAsync(cancellation).ConfigureAwait(false);
 
             // ── Step 6: Start dedicated pipe writer task ──────────────────────
             _writerCts = new CancellationTokenSource();
@@ -577,7 +620,10 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
         }
         _isReady = false;
         _supportsEditor = false;
-        _lastReadPos = -1;
+        _readBlockCounter = 0;
+        _ringCapacity = 0;
+        _bufferedSampleOffset = 0;
+        _bufferedSampleCount = 0;
         _editorAvailabilityDescription = "VST3 plugin backend has been disposed.";
 
         // Enqueue shutdown command and complete channel
@@ -623,7 +669,10 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
     {
         _isReady = false;
         _supportsEditor = false;
-        _lastReadPos = -1;
+        _readBlockCounter = 0;
+        _ringCapacity = 0;
+        _bufferedSampleOffset = 0;
+        _bufferedSampleCount = 0;
         _editorAvailabilityDescription = "VST3 plugin is reloading.";
 
         // Stop the background writer task first
@@ -904,5 +953,30 @@ public sealed class Vst3BridgeBackend : IInstrumentBackend, IEditorCapable, ISam
         return string.IsNullOrWhiteSpace(diagnostics)
             ? fallbackMessage
             : $"{fallbackMessage} {diagnostics}";
+    }
+
+    private async Task PrimeInitialAudioAsync(CancellationToken cancellation)
+    {
+        if (_mmfView is not { } view)
+            return;
+
+        int publishedAtAck = view.ReadInt32(16);
+        _readBlockCounter = publishedAtAck;
+        _bufferedSampleOffset = 0;
+        _bufferedSampleCount = 0;
+
+        using var preRollCts = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        preRollCts.CancelAfter(TimeSpan.FromMilliseconds(100));
+
+        try
+        {
+            while (view.ReadInt32(16) <= publishedAtAck)
+                await Task.Delay(5, preRollCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Best-effort priming only. If the first post-load block is late, the
+            // regular read path will still fall back to silence instead of blocking.
+        }
     }
 }

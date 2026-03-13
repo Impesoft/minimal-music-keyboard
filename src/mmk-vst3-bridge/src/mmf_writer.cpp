@@ -6,8 +6,8 @@
 namespace
 {
     constexpr std::int32_t kMmfMagic = 0x4D4D4B56;
-    constexpr std::int32_t kMmfVersion = 1;
-    constexpr std::size_t kHeaderSize = 16;
+    constexpr std::int32_t kMmfVersion = 2;
+    constexpr std::size_t kHeaderSize = 20;
 }
 
 MmfWriter::~MmfWriter()
@@ -28,16 +28,17 @@ bool MmfWriter::Open(DWORD hostPid)
     }
 
     auto* header = static_cast<std::int32_t*>(view_);
-    if (header[0] != kMmfMagic || header[1] != kMmfVersion || header[2] <= 0)
+    if (header[0] != kMmfMagic || header[1] != kMmfVersion || header[2] <= 0 || header[3] <= 0)
     {
         Close();
         return false;
     }
 
     frameSize_ = header[2];
-    writePos_ = reinterpret_cast<LONG*>(reinterpret_cast<std::uint8_t*>(view_) + 12);
+    ringCapacity_ = header[3];
+    writeCounterAddress_ = reinterpret_cast<LONG*>(reinterpret_cast<std::uint8_t*>(view_) + 16);
     audioBuffer_ = reinterpret_cast<float*>(reinterpret_cast<std::uint8_t*>(view_) + kHeaderSize);
-    writeCounter_ = *writePos_;
+    writeCounter_ = *writeCounterAddress_;
 
     return true;
 }
@@ -49,15 +50,18 @@ bool MmfWriter::WriteFrame(const float* stereoSamples, int frameCount)
 
     const int framesToCopy = std::min(frameCount, frameSize_);
     const int samplesToCopy = framesToCopy * 2;
-    std::memcpy(audioBuffer_, stereoSamples, samplesToCopy * sizeof(float));
+    const LONG blockCounter = writeCounter_;
+    const LONG slot = blockCounter % ringCapacity_;
+    float* const blockBuffer = audioBuffer_ + (static_cast<std::size_t>(slot) * frameSize_ * 2);
+    std::memcpy(blockBuffer, stereoSamples, samplesToCopy * sizeof(float));
 
     if (framesToCopy < frameSize_)
     {
-        std::fill(audioBuffer_ + samplesToCopy, audioBuffer_ + (frameSize_ * 2), 0.0f);
+        std::fill(blockBuffer + samplesToCopy, blockBuffer + (frameSize_ * 2), 0.0f);
     }
 
-    ++writeCounter_;
-    InterlockedExchange(writePos_, writeCounter_);
+    writeCounter_ = blockCounter + 1;
+    InterlockedExchange(writeCounterAddress_, writeCounter_);
     return true;
 }
 
@@ -75,9 +79,10 @@ void MmfWriter::Close()
         mappingHandle_ = nullptr;
     }
 
-    writePos_ = nullptr;
+    writeCounterAddress_ = nullptr;
     audioBuffer_ = nullptr;
     frameSize_ = 0;
+    ringCapacity_ = 0;
     writeCounter_ = 0;
 }
 

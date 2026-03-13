@@ -731,6 +731,7 @@ void AudioRenderer::Start(MmfWriter* writer)
 
     running_ = true;
     renderThread_ = std::thread(&AudioRenderer::RenderLoop, this);
+    ::SetThreadPriority(renderThread_.native_handle(), THREAD_PRIORITY_HIGHEST);
 }
 
 void AudioRenderer::Stop()
@@ -836,7 +837,7 @@ void AudioRenderer::RenderLoop()
 
     std::vector<float> buffer(static_cast<std::size_t>(frameSize_) * 2);
     const auto frameDuration =
-        std::chrono::duration<double>(static_cast<double>(kMaxBlockSize) / kSampleRate);
+        std::chrono::duration<double>(static_cast<double>(frameSize_) / kSampleRate);
     auto nextTick = std::chrono::steady_clock::now();
 
     while (running_.load())

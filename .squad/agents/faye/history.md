@@ -525,3 +525,25 @@
 - ✅ OB-Xd now shows real load-time diagnostic reason, not generic fallback
 
 **Related:** OB-Xd VST3 Host Compatibility Fix (2026-03-12), earlier in history
+
+### VST Bridge Crackle Analysis + Buffering Fix (2026-03-13)
+
+**Files modified:**
+- `src/MinimalMusicKeyboard/Services/Vst3BridgeBackend.cs` — changed bridge MMF blocks from 960-frame / 20 ms to 480-frame / 10 ms, doubled ring depth to 16 blocks, and added post-load priming so managed playback starts at the first post-load block instead of stale prerendered silence.
+- `src/mmk-vst3-bridge/src/audio_renderer.cpp` — raised the bridge render thread priority to `THREAD_PRIORITY_HIGHEST` so MMF publishes are less likely to miss cadence under scheduler jitter.
+
+**Most likely crackle root causes:**
+1. **Bridge/host cadence was too coarse:** the bridge rendered in 20 ms chunks (`frameSize=960`), exactly the same order of magnitude as the WASAPI shared buffer. Any late wake-up or callback jitter meant the host had no smaller-granularity block to consume, so it fell straight into an underrun/discontinuity.
+2. **Bridge thread was not prioritized for real-time-ish work:** the render loop was a normal-priority `sleep_until` thread, making missed publish deadlines more likely under desktop load.
+3. **Startup MMF handoff could begin on stale blocks:** the managed reader could start consuming already-published pre-load silence/history instead of beginning at the first block generated after the plugin load ACK, which made the handoff less deterministic.
+
+**What I changed:**
+- Reduced MMF audio publish block size to 480 frames (10 ms) while keeping 48 kHz stereo.
+- Increased ring capacity to 16 blocks so total jitter headroom stays healthy while cadence gets finer.
+- Primed the managed reader after `load_ack` so playback starts from the first newly rendered block instead of old ring contents.
+- Raised the native render thread priority.
+
+**Validation:**
+- ✅ `dotnet build .\MinimalMusicKeyboard.sln --no-incremental`
+- ✅ `dotnet test .\MinimalMusicKeyboard.sln --no-build` (existing suite still discovers 0 tests)
+- ✅ Native bridge rebuilt successfully via CMake Release build

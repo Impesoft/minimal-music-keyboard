@@ -170,3 +170,17 @@
 **Deliverable:** `.squad/decisions/inbox/ed-phase4-fixes.md`
 
 ## Learnings
+
+### 2026-03-13 — VST Crackle Failure-Mode Triage
+
+**Most likely crackle mode:** timing-domain mismatch between the bridge producer thread and the host/WASAPI consumer, not stale-buffer replay. The bridge renders on its own `std::thread` paced by `sleep_until` (`src\mmk-vst3-bridge\src\audio_renderer.cpp:832-848`), while the app consumes on the WASAPI callback thread (`src\MinimalMusicKeyboard\Services\AudioEngine.cs:239-289`). Those clocks are not synchronized; the MMF ring only absorbs short-term drift.
+
+**Why stale-buffer replay is unlikely in current code:** the managed reader now uses a version-2 MMF ring with `writeCounter`, `ringCapacity`, and buffered partial-block consumption (`src\MinimalMusicKeyboard\Services\Vst3BridgeBackend.cs:91-109`, `139-215`). If no new block is published, the reader zero-fills the remainder instead of replaying an old block. The native writer also publishes whole blocks into ring slots before atomically advancing `writeCounter` (`src\mmk-vst3-bridge\src\mmf_writer.cpp:46-65`).
+
+**What to watch when reproducing:**
+- `publishedBlockCount <= _readBlockCounter` or zero-fill remainder in `Vst3BridgeBackend.Read()` -> consumer underrun / late producer
+- `unreadBlockCount > _ringCapacity` in `Vst3BridgeBackend.Read()` -> producer outran consumer / drift overflow
+- periodic pops at ~ring-depth intervals without CPU pegging -> scheduling jitter / unsynchronized pacing
+- persistent pops from first load across every plugin and device would make block-size negotiation the next suspect, but current code keeps `frameSize = 960` on both sides (`Vst3BridgeBackend.cs:291-308`, `audio_renderer.cpp:523-528`, `832-848`)
+
+**Verification status:** `dotnet build MinimalMusicKeyboard.sln -c Debug -p:Platform=x64` succeeds; `dotnet test MinimalMusicKeyboard.sln -c Debug -p:Platform=x64 --no-build` still discovers 0 tests, so this path remains unguarded by automation.

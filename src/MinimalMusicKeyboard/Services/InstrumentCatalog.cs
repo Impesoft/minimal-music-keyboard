@@ -25,7 +25,7 @@ public sealed class InstrumentCatalog
         foreach (var inst in _instruments)
         {
             _byId[inst.Id] = inst;
-            if (inst.Type == InstrumentType.SoundFont)
+            if (inst.GetEffectiveType() == InstrumentType.SoundFont)
                 _byProgramNumber[inst.ProgramNumber] = inst;
         }
     }
@@ -50,7 +50,7 @@ public sealed class InstrumentCatalog
         foreach (var inst in updated)
         {
             _byId[inst.Id] = inst;
-            if (inst.Type == InstrumentType.SoundFont)
+            if (inst.GetEffectiveType() == InstrumentType.SoundFont)
                 _byProgramNumber[inst.ProgramNumber] = inst;
         }
     }
@@ -72,7 +72,7 @@ public sealed class InstrumentCatalog
         foreach (var inst in updated)
         {
             _byId[inst.Id] = inst;
-            if (inst.Type == InstrumentType.SoundFont)
+            if (inst.GetEffectiveType() == InstrumentType.SoundFont)
                 _byProgramNumber[inst.ProgramNumber] = inst;
         }
     }
@@ -94,7 +94,7 @@ public sealed class InstrumentCatalog
         foreach (var inst in updated)
         {
             _byId[inst.Id] = inst;
-            if (inst.Type == InstrumentType.SoundFont)
+            if (inst.GetEffectiveType() == InstrumentType.SoundFont)
                 _byProgramNumber[inst.ProgramNumber] = inst;
         }
     }

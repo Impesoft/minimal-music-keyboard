@@ -79,8 +79,8 @@ public sealed class AppLifecycleManager : IDisposable
         var savedVst3 = _settings.ButtonMappings
             .Where(m => !string.IsNullOrEmpty(m.InstrumentId))
             .Select(m => _catalog.GetById(m.InstrumentId!))
-            .FirstOrDefault(i => i?.Type == InstrumentType.Vst3
-                              && !string.IsNullOrEmpty(i.Vst3PluginPath));
+            .FirstOrDefault(i => i?.GetEffectiveType() == InstrumentType.Vst3
+                               && !string.IsNullOrEmpty(i.Vst3PluginPath));
         if (savedVst3 is not null)
             _audioEngine.SelectInstrument(savedVst3);
 

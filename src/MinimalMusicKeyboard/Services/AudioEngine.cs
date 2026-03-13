@@ -144,17 +144,19 @@ public sealed class AudioEngine : IAudioEngine
     /// <inheritdoc/>
     public void SelectInstrument(InstrumentDefinition instrument)
     {
-        if (instrument.Type == InstrumentType.SoundFont)
+        var instrumentType = instrument.GetEffectiveType();
+
+        if (instrumentType == InstrumentType.SoundFont)
         {
             HandleSoundFontInstrument(instrument);
         }
-        else if (instrument.Type == InstrumentType.Vst3)
+        else if (instrumentType == InstrumentType.Vst3)
         {
             HandleVst3Instrument(instrument);
         }
         else
         {
-            Debug.WriteLine($"[AudioEngine] Unsupported instrument type '{instrument.Type}'.");
+            Debug.WriteLine($"[AudioEngine] Unsupported instrument type '{instrumentType}'.");
         }
     }
 

@@ -48,4 +48,12 @@ public sealed record InstrumentDefinition
 
     [JsonPropertyName("category")]
     public string Category { get; init; } = string.Empty;
+
+    public InstrumentType GetEffectiveType()
+    {
+        if (!string.IsNullOrWhiteSpace(Vst3PluginPath))
+            return InstrumentType.Vst3;
+
+        return InstrumentType.SoundFont;
+    }
 }

@@ -231,7 +231,7 @@ public sealed partial class SettingsWindow : Window
                 ? _catalog.GetById(mapping.InstrumentId)
                 : null;
 
-            bool isVst3 = slotInstrument?.Type == InstrumentType.Vst3;
+            bool isVst3 = slotInstrument?.GetEffectiveType() == InstrumentType.Vst3;
 
             // ── Card container ────────────────────────────────────────────────────────
             var card = new Border
@@ -249,7 +249,7 @@ public sealed partial class SettingsWindow : Window
             // ── Single-row Grid ───────────────────────────────────────────────────────
             var rowGrid = new Grid { VerticalAlignment = VerticalAlignment.Center };
             rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });                                                  // 0: badge
-            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                                                     // 1: SF2/VST3 radios
+            rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                                                     // 1: inferred type label
             rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });                                                  // 2: Map
             rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });                                                  // 3: Clear
             rowGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });                                                     // 4: CC label
@@ -282,34 +282,17 @@ public sealed partial class SettingsWindow : Window
             Grid.SetColumn(slotBadge, 0);
             rowGrid.Children.Add(slotBadge);
 
-            // Col 1: SF2/VST3 radio buttons
-            var rbSf2 = new RadioButton
+            // Col 1: inferred type label
+            var typeLabel = new TextBlock
             {
-                Content = "SF2",
-                GroupName = $"type-slot-{i}",
-                IsChecked = !isVst3,
+                Text = GetTypeTextForSlot(slotInstrument),
                 VerticalAlignment = VerticalAlignment.Center,
                 FontSize = 12,
-            };
-            var rbVst3 = new RadioButton
-            {
-                Content = "VST3",
-                GroupName = $"type-slot-{i}",
-                IsChecked = isVst3,
-                VerticalAlignment = VerticalAlignment.Center,
-                FontSize = 12,
-                Margin = new Thickness(8, 0, 0, 0),
-            };
-            var typePanel = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                VerticalAlignment = VerticalAlignment.Center,
+                Opacity = 0.7,
                 Margin = new Thickness(6, 0, 6, 0),
             };
-            typePanel.Children.Add(rbSf2);
-            typePanel.Children.Add(rbVst3);
-            Grid.SetColumn(typePanel, 1);
-            rowGrid.Children.Add(typePanel);
+            Grid.SetColumn(typeLabel, 1);
+            rowGrid.Children.Add(typeLabel);
 
             // Col 2: Map button
             var mapBtn = new Button
@@ -348,60 +331,31 @@ public sealed partial class SettingsWindow : Window
             Grid.SetColumn(triggerLabel, 4);
             rowGrid.Children.Add(triggerLabel);
 
-            // Col 5 (SF2 mode): SF2 filename label — shows the loaded file, toggled visible/hidden with type
-            var sf2PathLabel = new TextBlock
+            // Col 5: instrument file label
+            var instrumentPathLabel = new TextBlock
             {
-                Text = GetSf2TextForSlot(slotInstrument),
+                Text = GetInstrumentPathTextForSlot(slotInstrument),
                 FontSize = 11,
                 Opacity = 0.7,
                 VerticalAlignment = VerticalAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 Margin = new Thickness(0, 0, 4, 0),
-                Visibility = isVst3 ? Visibility.Collapsed : Visibility.Visible,
             };
-            Grid.SetColumn(sf2PathLabel, 5);
-            rowGrid.Children.Add(sf2PathLabel);
+            Grid.SetColumn(instrumentPathLabel, 5);
+            rowGrid.Children.Add(instrumentPathLabel);
 
-            // Col 5 (VST3 mode): plugin path label
-            var vst3PluginLabel = new TextBlock
-            {
-                Text = GetVst3PluginTextForSlot(slotInstrument),
-                FontSize = 11,
-                Opacity = 0.6,
-                VerticalAlignment = VerticalAlignment.Center,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-                Margin = new Thickness(0, 0, 4, 0),
-                Visibility = isVst3 ? Visibility.Visible : Visibility.Collapsed,
-            };
-            Grid.SetColumn(vst3PluginLabel, 5);
-            rowGrid.Children.Add(vst3PluginLabel);
-
-            // Col 6 (SF2 mode): Browse button
-            var sf2Btn = new Button
+            // Col 6: Browse button
+            var browseBtn = new Button
             {
                 Content = "Browse…",
                 FontSize = 11,
                 Padding = new Thickness(8, 2, 8, 2),
                 Margin = new Thickness(4, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
-                Visibility = isVst3 ? Visibility.Collapsed : Visibility.Visible,
             };
-            ToolTipService.SetToolTip(sf2Btn, slotInstrument?.SoundFontPath ?? "—");
-            Grid.SetColumn(sf2Btn, 6);
-            rowGrid.Children.Add(sf2Btn);
-
-            // Col 6 (VST3 mode): Plugin button
-            var vst3PluginBtn = new Button
-            {
-                Content = "Plugin…",
-                FontSize = 11,
-                Padding = new Thickness(8, 2, 8, 2),
-                Margin = new Thickness(4, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center,
-                Visibility = isVst3 ? Visibility.Visible : Visibility.Collapsed,
-            };
-            Grid.SetColumn(vst3PluginBtn, 6);
-            rowGrid.Children.Add(vst3PluginBtn);
+            ToolTipService.SetToolTip(browseBtn, GetInstrumentToolTipForSlot(slotInstrument));
+            Grid.SetColumn(browseBtn, 6);
+            rowGrid.Children.Add(browseBtn);
 
             cardContent.Children.Add(rowGrid);
 
@@ -484,30 +438,17 @@ public sealed partial class SettingsWindow : Window
             vst3StatusRow.Children.Add(vst3ReloadBtn);
             cardContent.Children.Add(vst3StatusRow);
 
-            // Wire up event handlers
-            rbSf2.Checked += (_, _) =>
+            void ApplySlotTypeUi(InstrumentDefinition? instrument)
             {
-                sf2PathLabel.Visibility    = Visibility.Visible;
-                vst3PluginLabel.Visibility = Visibility.Collapsed;
-                sf2Btn.Visibility          = Visibility.Visible;
-                vst3PluginBtn.Visibility   = Visibility.Collapsed;
-                vst3PresetRow.Visibility   = Visibility.Collapsed;
-                vst3StatusRow.Visibility   = Visibility.Collapsed;
-                UpdateSlotInstrumentType(slotIdx, InstrumentType.SoundFont);
-            };
-            rbVst3.Checked += (_, _) =>
-            {
-                sf2PathLabel.Visibility    = Visibility.Collapsed;
-                vst3PluginLabel.Visibility = Visibility.Visible;
-                sf2Btn.Visibility          = Visibility.Collapsed;
-                vst3PluginBtn.Visibility   = Visibility.Visible;
-                vst3PresetRow.Visibility   = Visibility.Visible;
-                // Restore status row visibility if there's a status to show
-                vst3StatusRow.Visibility   = string.IsNullOrEmpty(vst3StatusText.Text)
-                    ? Visibility.Collapsed
-                    : Visibility.Visible;
-                UpdateSlotInstrumentType(slotIdx, InstrumentType.Vst3);
-            };
+                bool slotIsVst3 = instrument?.GetEffectiveType() == InstrumentType.Vst3;
+                typeLabel.Text = GetTypeTextForSlot(instrument);
+                instrumentPathLabel.Text = GetInstrumentPathTextForSlot(instrument);
+                ToolTipService.SetToolTip(browseBtn, GetInstrumentToolTipForSlot(instrument));
+                vst3PresetRow.Visibility = slotIsVst3 ? Visibility.Visible : Visibility.Collapsed;
+                vst3StatusRow.Visibility = slotIsVst3 && !string.IsNullOrEmpty(vst3StatusText.Text)
+                    ? Visibility.Visible
+                    : Visibility.Collapsed;
+            }
 
             slotBadge.Click += (_, _) =>
             {
@@ -516,73 +457,64 @@ public sealed partial class SettingsWindow : Window
                     _switcher.SelectInstrumentFromUi(rowState.SlotInstrument);
             };
 
-            sf2Btn.Click += async (_, _) =>
+            browseBtn.Click += async (_, _) =>
             {
-                var path = await PickSf2FileAsync();
-                if (path is null) return;
+                var selection = await PickInstrumentFileAsync();
+                if (selection is not { } picked) return;
+
+                var path = picked.Path;
+                var inferredType = picked.Type;
 
                 var rowState = _mappingRows.FirstOrDefault(r => r.SlotIndex == slotIdx);
                 InstrumentDefinition updated;
                 if (rowState?.SlotInstrument is not null)
                 {
-                    updated = rowState.SlotInstrument with { SoundFontPath = path };
-                    _catalog.UpdateInstrumentSoundFont(updated.Id, path);
+                    updated = rowState.SlotInstrument with
+                    {
+                        DisplayName = Path.GetFileNameWithoutExtension(path),
+                        Type = inferredType,
+                        SoundFontPath = inferredType == InstrumentType.SoundFont ? path : null,
+                        Vst3PluginPath = inferredType == InstrumentType.Vst3 ? path : null,
+                        Vst3PresetPath = inferredType == InstrumentType.Vst3 ? rowState.SlotInstrument.Vst3PresetPath : null,
+                    };
+                    _catalog.AddOrUpdateInstrument(updated);
                 }
                 else
                 {
-                    // No instrument assigned to this slot yet — create a slot-specific entry
                     updated = new InstrumentDefinition
                     {
-                        Id            = $"sf2-slot-{slotIdx}",
-                        DisplayName   = Path.GetFileNameWithoutExtension(path),
-                        Type          = InstrumentType.SoundFont,
-                        SoundFontPath = path,
-                        BankNumber    = 0,
-                        ProgramNumber = 0,
-                        Category      = "Custom",
+                        Id = $"instrument-slot-{slotIdx}",
+                        DisplayName = Path.GetFileNameWithoutExtension(path),
+                        Type = inferredType,
+                        SoundFontPath = inferredType == InstrumentType.SoundFont ? path : null,
+                        Vst3PluginPath = inferredType == InstrumentType.Vst3 ? path : null,
+                        BankNumber = 0,
+                        ProgramNumber = inferredType == InstrumentType.Vst3 ? slotIdx : 0,
+                        Category = "Custom",
                     };
                     _catalog.AddOrUpdateInstrument(updated);
                     _settings.ButtonMappings[slotIdx].InstrumentId = updated.Id;
                 }
                 UpdateSlotInstrument(slotIdx, updated);
-                sf2PathLabel.Text = Path.GetFileNameWithoutExtension(path);
-                ToolTipService.SetToolTip(sf2Btn, path);
-            };
-
-            vst3PluginBtn.Click += async (_, _) =>
-            {
-                var path = await PickVst3PluginFileAsync();
-                if (path is null) return;
-
-                var rowState = _mappingRows.FirstOrDefault(r => r.SlotIndex == slotIdx);
-                var currentInst = rowState?.SlotInstrument ?? new InstrumentDefinition
-                {
-                    Id = $"vst3-slot-{slotIdx}",
-                    DisplayName = Path.GetFileNameWithoutExtension(path),
-                    Type = InstrumentType.Vst3,
-                    BankNumber = 0,
-                    ProgramNumber = slotIdx,
-                };
-
-                var updated = currentInst with
-                {
-                    Vst3PluginPath = path,
-                    // Refresh the display name from the new filename each time a plugin is picked.
-                    DisplayName = Path.GetFileNameWithoutExtension(path),
-                };
-                UpdateSlotInstrument(slotIdx, updated);
-                _catalog.AddOrUpdateInstrument(updated);
-                vst3PluginLabel.Text = Path.GetFileName(path);
-                ToolTipService.SetToolTip(vst3PluginLabel, path);
                 _settings.ButtonMappings[slotIdx].InstrumentId = updated.Id;
+                ApplySlotTypeUi(updated);
 
-                // Immediately kick off loading and show status.
-                _loadingVst3SlotIndex = slotIdx;
-                vst3StatusText.Text = "⏳ Loading VST3 plugin...";
-                vst3StatusRow.Visibility = Visibility.Visible;
-                vst3ReloadBtn.Visibility = Visibility.Collapsed;
-                vst3EditorBtn.IsEnabled  = false;
-                _switcher.SelectInstrumentFromUi(updated);
+                if (updated.GetEffectiveType() == InstrumentType.Vst3)
+                {
+                    _loadingVst3SlotIndex = slotIdx;
+                    vst3StatusText.Text = "⏳ Loading VST3 plugin...";
+                    vst3StatusRow.Visibility = Visibility.Visible;
+                    vst3ReloadBtn.Visibility = Visibility.Collapsed;
+                    vst3EditorBtn.IsEnabled = false;
+                    _switcher.SelectInstrumentFromUi(updated);
+                }
+                else
+                {
+                    vst3StatusText.Text = string.Empty;
+                    vst3StatusRow.Visibility = Visibility.Collapsed;
+                    vst3ReloadBtn.Visibility = Visibility.Collapsed;
+                    vst3EditorBtn.IsEnabled = false;
+                }
             };
 
             vst3PresetBtn.Click += async (_, _) =>
@@ -591,7 +523,7 @@ public sealed partial class SettingsWindow : Window
                 if (path is null) return;
 
                 var rowState = _mappingRows.FirstOrDefault(r => r.SlotIndex == slotIdx);
-                if (rowState?.SlotInstrument is not null)
+                if (rowState?.SlotInstrument is not null && rowState.SlotInstrument.GetEffectiveType() == InstrumentType.Vst3)
                 {
                     var updated = rowState.SlotInstrument with { Vst3PresetPath = path };
                     UpdateSlotInstrument(slotIdx, updated);
@@ -659,32 +591,45 @@ public sealed partial class SettingsWindow : Window
             };
 
             ButtonMappingsPanel.Children.Add(card);
+            ApplySlotTypeUi(slotInstrument);
             _mappingRows.Add(new MappingRowState(i, slotBadge, slotLabel, triggerLabel, mapBtn, slotInstrument, vst3StatusRow, vst3StatusText, vst3ReloadBtn, vst3EditorBtn));
         }
     }
 
-    private string GetSf2TextForSlot(InstrumentDefinition? inst)
+    private string GetTypeTextForSlot(InstrumentDefinition? inst)
     {
-        if (inst is null || inst.Type != InstrumentType.SoundFont) return "—";
-        return string.IsNullOrEmpty(inst.SoundFontPath)
-            ? "(no SF2 loaded)"
-            : Path.GetFileNameWithoutExtension(inst.SoundFontPath);
+        if (inst is null)
+            return "—";
+
+        return inst.GetEffectiveType() == InstrumentType.Vst3 ? "VST3" : "SF2";
     }
 
-    private string GetVst3PluginTextForSlot(InstrumentDefinition? inst)
+    private string GetInstrumentPathTextForSlot(InstrumentDefinition? inst)
     {
-        if (inst is null || inst.Type != InstrumentType.Vst3) return "No plugin selected";
-        return string.IsNullOrEmpty(inst.Vst3PluginPath)
-            ? "No plugin selected"
-            : Path.GetFileName(inst.Vst3PluginPath);
+        if (inst is null)
+            return "—";
+
+        return inst.GetEffectiveType() == InstrumentType.Vst3
+            ? string.IsNullOrEmpty(inst.Vst3PluginPath) ? "No plugin selected" : Path.GetFileName(inst.Vst3PluginPath)
+            : string.IsNullOrEmpty(inst.SoundFontPath) ? "(no SF2 loaded)" : Path.GetFileNameWithoutExtension(inst.SoundFontPath);
     }
 
     private string GetVst3PresetTextForSlot(InstrumentDefinition? inst)
     {
-        if (inst is null || inst.Type != InstrumentType.Vst3) return "(none)";
+        if (inst is null || inst.GetEffectiveType() != InstrumentType.Vst3) return "(none)";
         return string.IsNullOrEmpty(inst.Vst3PresetPath)
             ? "(none)"
             : Path.GetFileName(inst.Vst3PresetPath);
+    }
+
+    private string GetInstrumentToolTipForSlot(InstrumentDefinition? inst)
+    {
+        if (inst is null)
+            return "Browse for an instrument file";
+
+        return inst.GetEffectiveType() == InstrumentType.Vst3
+            ? inst.Vst3PluginPath ?? "Browse for an instrument file"
+            : inst.SoundFontPath ?? "Browse for an instrument file";
     }
 
     private void UpdateSlotInstrument(int slotIdx, InstrumentDefinition? instrument)
@@ -693,16 +638,6 @@ public sealed partial class SettingsWindow : Window
         if (idx < 0) return;
         var old = _mappingRows[idx];
         _mappingRows[idx] = old with { SlotInstrument = instrument };
-    }
-
-    private void UpdateSlotInstrumentType(int slotIdx, InstrumentType type)
-    {
-        var rowState = _mappingRows.FirstOrDefault(r => r.SlotIndex == slotIdx);
-        if (rowState?.SlotInstrument is not null)
-        {
-            var updated = rowState.SlotInstrument with { Type = type };
-            UpdateSlotInstrument(slotIdx, updated);
-        }
     }
 
     // ── Listening mode ────────────────────────────────────────────────────────
@@ -809,7 +744,7 @@ public sealed partial class SettingsWindow : Window
     {
         ActiveInstrumentLabel.Text = instrument is null
             ? "Active instrument: —"
-            : $"Active instrument: {instrument.DisplayName}";
+            : $"Active instrument: {instrument.DisplayName} ({(instrument.GetEffectiveType() == InstrumentType.Vst3 ? "VST3" : "SF2")})";
 
         // Highlight the slot number whose InstrumentId matches the active instrument.
         foreach (var row in _mappingRows)
@@ -824,28 +759,24 @@ public sealed partial class SettingsWindow : Window
         }
     }
 
-    /// <summary>Shows a FileOpenPicker for .sf2 files and returns the chosen path, or null if cancelled.</summary>
-    private async Task<string?> PickSf2FileAsync()
-    {
-        var picker = new FileOpenPicker();
-        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
-        picker.ViewMode = PickerViewMode.List;
-        picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
-        picker.FileTypeFilter.Add(".sf2");
-        var file = await picker.PickSingleFileAsync();
-        return file?.Path;
-    }
-
-    /// <summary>Shows a FileOpenPicker for .vst3 files and returns the chosen path, or null if cancelled.</summary>
-    private async Task<string?> PickVst3PluginFileAsync()
+    /// <summary>Shows a FileOpenPicker for .sf2 and .vst3 files and returns the chosen path plus inferred type, or null if cancelled.</summary>
+    private async Task<(string Path, InstrumentType Type)?> PickInstrumentFileAsync()
     {
         var picker = new FileOpenPicker();
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
         picker.ViewMode = PickerViewMode.List;
         picker.SuggestedStartLocation = PickerLocationId.ComputerFolder;
+        picker.FileTypeFilter.Add(".sf2");
         picker.FileTypeFilter.Add(".vst3");
         var file = await picker.PickSingleFileAsync();
-        return file?.Path;
+        if (file?.Path is null)
+            return null;
+
+        var type = string.Equals(Path.GetExtension(file.Path), ".vst3", StringComparison.OrdinalIgnoreCase)
+            ? InstrumentType.Vst3
+            : InstrumentType.SoundFont;
+
+        return (file.Path, type);
     }
 
     /// <summary>Shows a FileOpenPicker for .vstpreset files and returns the chosen path, or null if cancelled.</summary>
@@ -977,7 +908,7 @@ public sealed partial class SettingsWindow : Window
         {
             var inst = row.SlotInstrument;
             if (inst is not null &&
-                inst.Type == InstrumentType.SoundFont &&
+                inst.GetEffectiveType() == InstrumentType.SoundFont &&
                 !string.IsNullOrEmpty(inst.SoundFontPath) &&
                 File.Exists(inst.SoundFontPath))
             {
